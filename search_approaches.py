@@ -43,6 +43,7 @@ class PQ:
         self.Ds = None
         self.pqcode = None
         self.avg_dist = None
+        self.inertia = None
 
     def train(self, data: np.ndarray, add:bool = True,
               compute_distortions:bool = False, verbose:bool = False) -> None:
@@ -52,6 +53,7 @@ class PQ:
         assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
         self.Ds = int(self.D / self.M)
         self.codebook = np.empty((self.M, self.K, self.Ds), np.float32)
+        self.inertia = np.empty((self.M))
         self.pqcode = None # if train is called twice, previous codes are discarded
         self.avg_dist = None
         
@@ -64,9 +66,9 @@ class PQ:
             data_sub = data[:, m*self.Ds : (m+1)*self.Ds]
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
                 random_state=self.seed, max_iter=self.kmeans_iter).fit(data_sub)
-            
+            self.inertia[m] = km.inertia_
             if verbose:
-                print(f"KMeans on subspace {m+1} converged in {km.n_iter_} iterations.")
+                print(f"KMeans on subspace {m+1} converged in {km.n_iter_} iterations with an inertia of {km.inertia_}.")
             
             self.codebook[m] = km.cluster_centers_
             if add:
