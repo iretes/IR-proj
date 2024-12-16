@@ -175,6 +175,7 @@ class IVF:
         self.ivf = None
         self.num_els = 0
         self.centroids = None
+        self.inertia = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
                      kmeans_minit=self.kmeans_minit, seed=None)
 
@@ -185,12 +186,11 @@ class IVF:
         assert data.shape[0] > self.Kp, "Number of vectors must be greater than the number of centroids."
         
         self.num_els = 0
-        self.centroids = None
         self.ivf = None
 
-        from sklearn.cluster import KMeans 
         km = KMeans(n_clusters=self.Kp, init=self.kmeans_minit, n_init=1,
             random_state=self.seed, max_iter=self.kmeans_iter).fit(data)
+        self.inertia = km.inertia_
         if verbose:
             print(f"KMeans for IVF converged in {km.n_iter_} iterations.")
         
