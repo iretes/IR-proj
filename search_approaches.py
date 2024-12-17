@@ -1,11 +1,11 @@
 import numpy as np
 from scipy.cluster.vq import vq
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, BisectingKMeans
 from scipy.spatial.distance import cdist
 
 class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
-                 kmeans_minit:str = "k-means++", seed:int = None):
+                 kmeans_minit:str = "k-means++", seed:int = None, optimize_partitions=False):
         """
         Product Quantization (PQ) implementation.
 
@@ -44,6 +44,9 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = None
+        self.optimize_partitions = optimize_partitions
+        self.chunk_start = None
+        self.col_cluster_sizes = None
 
     def train(self, data: np.ndarray, add:bool = True,
               compute_distortions:bool = False, verbose:bool = False) -> None:
@@ -52,7 +55,7 @@ class PQ:
         self.D = data.shape[1]
         assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
         self.Ds = int(self.D / self.M)
-        self.codebook = np.empty((self.M, self.K, self.Ds), np.float32)
+        self.codebook = [] # np.empty((self.M, self.K, self.Ds), np.float32)
         self.inertia = np.empty((self.M))
         self.pqcode = None # if train is called twice, previous codes are discarded
         self.avg_dist = None
@@ -62,15 +65,28 @@ class PQ:
             if compute_distortions:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
 
+        if self.optimize_partitions:
+            km_cols = KMeans(n_clusters=self.M, init=self.kmeans_minit,
+                            n_init=1, random_state=self.seed,
+                            max_iter=self.kmeans_iter).fit(data.T)
+            _, self.col_cluster_sizes = np.unique(km_cols.labels_, return_counts=True)
+            self.chunk_start = np.zeros(self.M+1, dtype=int)
+            self.chunk_start[1:] = np.cumsum(self.col_cluster_sizes)
+            self.cols_perm = np.argsort(km_cols.labels_)
+            data = data[:, self.cols_perm]
+        else:
+            self.chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
+            self.col_cluster_sizes = np.full(self.M, self.Ds)
+
         for m in range(self.M):
-            data_sub = data[:, m*self.Ds : (m+1)*self.Ds]
+            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
                 random_state=self.seed, max_iter=self.kmeans_iter).fit(data_sub)
             self.inertia[m] = km.inertia_
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {km.n_iter_} iterations with an inertia of {km.inertia_}.")
             
-            self.codebook[m] = km.cluster_centers_
+            self.codebook.append(km.cluster_centers_)
             if add:
                 self.pqcode[:, m], _ = vq(data_sub, self.codebook[m])
                 if compute_distortions:
@@ -89,9 +105,11 @@ class PQ:
         self.pqcode = pqcode # if self.pqcode is None else np.vstack((self.pqcode, pqcode))
 
         if compute_distortions: # recomputed if we train on subspace and add other data
+            if self.optimize_partitions:
+                data = data[:, self.cols_perm]
             self.avg_dist = np.zeros((self.M, self.K), np.float32)
             for m in range(self.M):
-                data_sub = data[:, m*self.Ds : (m+1)*self.Ds]
+                data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
                 for k in range(self.K):
                     dist = cdist(data_sub[self.pqcode[:, m] == k], [self.codebook[m][k]], 'sqeuclidean')
                     self.avg_dist[m, k] = np.mean(dist)
@@ -102,9 +120,12 @@ class PQ:
         assert self.codebook is not None, "The quantizer must be trained before compressing."
         assert data.shape[1] == self.D, "Data dimensions must match trained data dimensions."
 
+        if self.optimize_partitions:
+            data = data[:, self.cols_perm] # NOTE: permuta
+
         compressed = np.empty((data.shape[0], self.M), self.code_inttype)
         for m in range(self.M):
-            data_sub = data[:, m*self.Ds : (m+1)*self.Ds]
+            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
             compressed[:, m], _ = vq(data_sub, self.codebook[m])
         return compressed
     
@@ -116,7 +137,7 @@ class PQ:
 
         decompressed = np.empty((codes.shape[0], self.D), np.float32)
         for m in range(self.M):
-            decompressed[:, m*self.Ds : (m+1)*self.Ds] = self.codebook[m][codes[:, m]]
+            decompressed[:, self.chunk_start[m] : self.chunk_start[m+1]] = self.codebook[m][codes[:, m]]
         return decompressed
 
     def search(self, query: np.ndarray, subset: np.ndarray = None,
@@ -132,9 +153,12 @@ class PQ:
         if subset is None:
             subset = slice(None)
 
+        if self.optimize_partitions:
+            query = query[self.cols_perm]
+
         dist_table = np.empty((self.M, self.K), np.float32)
         for m in range(self.M):
-            query_sub = query[m*self.Ds : (m+1)*self.Ds]
+            query_sub = query[self.chunk_start[m] : self.chunk_start[m+1]]
             if not asym:
                 query_sub_code, _ = vq([query_sub], self.codebook[m])
                 query_sub = self.codebook[m][query_sub_code[0]]
@@ -153,7 +177,7 @@ class PQ:
 class IVF:
     def __init__(self, Kp: int = 1024, M:int = 8, K:int = 256,
                  kmeans_iter:int = 300, kmeans_minit:str = "k-means++",
-                 seed:int = None):
+                 seed:int = None, optimize_partitions=False, bisectingkmeans=False):
         """
         Inverted File (IVF) implementation with Product Quantization (PQ).
     
@@ -172,12 +196,13 @@ class IVF:
         self.kmeans_iter = kmeans_iter
         self.kmeans_minit = kmeans_minit
         self.seed = seed
+        self.bisectingkmeans = bisectingkmeans
         self.ivf = None
         self.num_els = 0
         self.centroids = None
         self.inertia = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
-                     kmeans_minit=self.kmeans_minit, seed=None)
+                     kmeans_minit=self.kmeans_minit, seed=None, optimize_partitions=optimize_partitions)
 
     def train(self, data: np.ndarray, add:bool = True,
               compute_distortions:bool = False, verbose:bool = False) -> None:
@@ -188,7 +213,8 @@ class IVF:
         self.num_els = 0
         self.ivf = None
 
-        km = KMeans(n_clusters=self.Kp, init=self.kmeans_minit, n_init=1,
+        clustering_algorithm = BisectingKMeans if self.bisectingkmeans else KMeans
+        km = clustering_algorithm(n_clusters=self.Kp, init=self.kmeans_minit, n_init=1,
             random_state=self.seed, max_iter=self.kmeans_iter).fit(data)
         self.inertia = km.inertia_
         if verbose:
