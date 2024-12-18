@@ -1,11 +1,14 @@
 import numpy as np
 from scipy.cluster.vq import vq
 from sklearn.cluster import KMeans, BisectingKMeans
+from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
+import matplotlib.pyplot as plt
 
 class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
-                 kmeans_minit:str = "k-means++", seed:int = None, optimize_partitions=False):
+        kmeans_minit:str = "k-means++", seed:int = None,
+        optimize_partitions:bool = False):
         """
         Product Quantization (PQ) implementation.
 
@@ -48,14 +51,64 @@ class PQ:
         self.chunk_start = None
         self.col_cluster_sizes = None
 
+    def _optimize_partitions(self, data: np.ndarray) -> None:
+        """Optimize the partitions of the data based on the KMeans clustering of
+        the columns."""
+        
+        if self.optimize_partitions:
+            km_cols = KMeans(n_clusters=self.M, init=self.kmeans_minit,
+                n_init=1, random_state=self.seed,
+                max_iter=self.kmeans_iter).fit(data.T)
+            _, self.col_cluster_sizes = np.unique(km_cols.labels_, return_counts=True)
+            self.chunk_start = np.zeros(self.M+1, dtype=int)
+            self.chunk_start[1:] = np.cumsum(self.col_cluster_sizes)
+            self.cols_perm = np.argsort(km_cols.labels_)
+        else:
+            self.chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
+            self.col_cluster_sizes = np.full(self.M, self.Ds)
+            self.cols_perm = np.arange(data.shape[1])  # identity permutation
+
+    def plot_neighbor_distances(self, data: np.ndarray, n_neighbors: int,
+        ax: plt.Axes) -> None:
+        """Plot the distances to the n_neighbors-th nearest neighbor for each
+        vector in the dataset in each subspace."""
+        
+        self.D = data.shape[1]
+        assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
+        self.Ds = int(self.D / self.M)
+
+        self._optimize_partitions(data)
+        data = data[:, self.cols_perm]
+
+        for m in range(self.M):
+            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            knn = NearestNeighbors(n_neighbors=n_neighbors).fit(data_sub)
+            distances, _ = knn.kneighbors(data_sub)
+            ax.plot(np.sort(distances[:, -1]), label=f"Subspace {m+1}")
+        ax.set_ylabel(f"{n_neighbors}-th nearest neighbor distance")
+        ax.set_xlabel("Vectors")
+        ax.legend()
+
+    def _compute_clustering_weights(self, data: np.ndarray,
+        n_neighbors: int) -> np.ndarray:
+        """Compute weights for KMeans clustering based on the distance to the
+        n_neighbors-th nearest neighbor."""
+        
+        knn = NearestNeighbors(n_neighbors=n_neighbors).fit(data)
+        distances, _ = knn.kneighbors(data)
+        weights = distances[:, -1]
+        weights /= np.max(weights)
+        return weights
+
     def train(self, data: np.ndarray, add:bool = True,
-              compute_distortions:bool = False, verbose:bool = False) -> None:
+        compute_distortions:bool = False, weight_samples:bool = False,
+        n_neighbors:int = 3, verbose:bool = False) -> None:
         """ Train the quantizer on the given data."""
         
         self.D = data.shape[1]
         assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
         self.Ds = int(self.D / self.M)
-        self.codebook = [] # np.empty((self.M, self.K, self.Ds), np.float32)
+        self.codebook = []
         self.inertia = np.empty((self.M))
         self.pqcode = None # if train is called twice, previous codes are discarded
         self.avg_dist = None
@@ -65,23 +118,17 @@ class PQ:
             if compute_distortions:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
 
-        if self.optimize_partitions:
-            km_cols = KMeans(n_clusters=self.M, init=self.kmeans_minit,
-                            n_init=1, random_state=self.seed,
-                            max_iter=self.kmeans_iter).fit(data.T)
-            _, self.col_cluster_sizes = np.unique(km_cols.labels_, return_counts=True)
-            self.chunk_start = np.zeros(self.M+1, dtype=int)
-            self.chunk_start[1:] = np.cumsum(self.col_cluster_sizes)
-            self.cols_perm = np.argsort(km_cols.labels_)
-            data = data[:, self.cols_perm]
-        else:
-            self.chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
-            self.col_cluster_sizes = np.full(self.M, self.Ds)
+        self._optimize_partitions(data)
+        data = data[:, self.cols_perm]
 
         for m in range(self.M):
             data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            sample_weight = None
+            if weight_samples:
+                sample_weight = self._compute_clustering_weights(data_sub, n_neighbors)
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
-                random_state=self.seed, max_iter=self.kmeans_iter).fit(data_sub)
+                random_state=self.seed, max_iter=self.kmeans_iter)
+            km = km.fit(data_sub, sample_weight=sample_weight)
             self.inertia[m] = km.inertia_
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {km.n_iter_} iterations with an inertia of {km.inertia_}.")
@@ -141,7 +188,8 @@ class PQ:
         return decompressed
 
     def search(self, query: np.ndarray, subset: np.ndarray = None,
-               asym:bool = True, correct:bool = False, sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
+        asym:bool = True, correct:bool = False,
+        sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
         """ Search for the nearest neighbors of the query in the quantized data."""
 
         assert self.codebook is not None, "The quantizer must be trained before searching."
@@ -176,8 +224,8 @@ class PQ:
     
 class IVF:
     def __init__(self, Kp: int = 1024, M:int = 8, K:int = 256,
-                 kmeans_iter:int = 300, kmeans_minit:str = "k-means++",
-                 seed:int = None, optimize_partitions=False, bisectingkmeans=False):
+        kmeans_iter:int = 300, kmeans_minit:str = "k-means++",
+        seed:int = None, optimize_partitions=False, bisectingkmeans=False):
         """
         Inverted File (IVF) implementation with Product Quantization (PQ).
     
@@ -205,7 +253,8 @@ class IVF:
                      kmeans_minit=self.kmeans_minit, seed=None, optimize_partitions=optimize_partitions)
 
     def train(self, data: np.ndarray, add:bool = True,
-              compute_distortions:bool = False, verbose:bool = False) -> None:
+        compute_distortions:bool = False, weight_samples:bool = False,
+        n_neighbors:int = 3, verbose:bool = False) -> None:
         """Train the IVF on the given data."""
         
         assert data.shape[0] > self.Kp, "Number of vectors must be greater than the number of centroids."
@@ -228,8 +277,10 @@ class IVF:
             self.num_els = data.shape[0]
         
         residuals = data - self.centroids[labels]
-        self.pq.train(residuals, add=add, compute_distortions=compute_distortions,
-                      verbose=verbose)
+        self.pq.train(residuals, add=add,
+            compute_distortions=compute_distortions,
+            weight_samples=weight_samples, n_neighbors=n_neighbors,
+            verbose=verbose)
 
     # NOTE: una sola volta
     def add(self, data: np.ndarray, compute_distortions:bool = False) -> None:
@@ -251,7 +302,7 @@ class IVF:
         #         self.ivf[i] = np.hstack((self.ivf[i], els_i))
 
     def search(self, query: np.ndarray, w:int = 8, asym:bool = True,
-               correct:bool = False, sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
+        correct:bool = False, sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
         """Search for the closest vectors to the query in the IVF index."""
         
         assert w <= self.Kp, "Number of centroids to visit must be less or equal to the number of centroids."
@@ -292,9 +343,11 @@ class ExactSearch:
         Attributes:
             data (np.ndarray): The dataset in which to search.
         """
+        
         self.data = data
 
-    def search(self, query: np.ndarray, sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
+    def search(self, query: np.ndarray,
+        sort:bool = True) -> tuple[np.ndarray, np.ndarray]:
         """Searches for the closest vectors to the query."""
         
         assert len(query) == self.data.shape[1], "Query dimensions must match dataset dimensions."
