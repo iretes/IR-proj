@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.cluster.vq import vq
-from sklearn.cluster import KMeans, BisectingKMeans
+from sklearn.cluster import KMeans, BisectingKMeans, SpectralBiclustering
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit:str = "k-means++", seed:int = None,
-        optimize_partitions:bool = False):
+        part_opt_alg: str = None):
         """
         Product Quantization (PQ) implementation.
 
@@ -24,7 +24,12 @@ class PQ:
             D (int): Original feature dimension.
             pqcode (numpy.ndarray): Quantized representation of the data.
             avg_dist (numpy.ndarray): Average distortion for each cluster in each subspace.
+            inertia (numpy.ndarray): Inertia of the KMeans clustering in each subspace.
+            part_opt_alg (str): Algorithm for optimizing partitions.
+            chunk_start (numpy.ndarray): Start index of each subspace in the data.
+            col_cluster_sizes (numpy.ndarray): Number of vectors in each cluster.
         """
+         # TODO: checks
 
         self.M = M
         self.K = K
@@ -47,7 +52,7 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = None
-        self.optimize_partitions = optimize_partitions
+        self.part_opt_alg = part_opt_alg
         self.chunk_start = None
         self.col_cluster_sizes = None
 
@@ -55,14 +60,21 @@ class PQ:
         """Optimize the partitions of the data based on the KMeans clustering of
         the columns."""
         
-        if self.optimize_partitions:
-            km_cols = KMeans(n_clusters=self.M, init=self.kmeans_minit,
-                n_init=1, random_state=self.seed,
-                max_iter=self.kmeans_iter).fit(data.T)
-            _, self.col_cluster_sizes = np.unique(km_cols.labels_, return_counts=True)
+        if self.part_opt_alg:
+            if self.part_opt_alg == "sbc":
+                sbc = SpectralBiclustering(n_clusters=(self.K, self.M),
+                    n_init=1, random_state=self.seed) # TODO: altri param?
+                sbc.fit(data)
+                self.col_labels = sbc.column_labels_
+            else:
+                km = KMeans(n_clusters=self.M, init=self.kmeans_minit,
+                    n_init=1, random_state=self.seed, max_iter=self.kmeans_iter)
+                km = km.fit(data.T)
+                self.col_labels = km.labels_
+            _, self.col_cluster_sizes = np.unique(self.col_labels, return_counts=True)
             self.chunk_start = np.zeros(self.M+1, dtype=int)
             self.chunk_start[1:] = np.cumsum(self.col_cluster_sizes)
-            self.cols_perm = np.argsort(km_cols.labels_)
+            self.cols_perm = np.argsort(self.col_labels)
         else:
             self.chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
             self.col_cluster_sizes = np.full(self.M, self.Ds)
@@ -169,7 +181,7 @@ class PQ:
         self.pqcode = pqcode # if self.pqcode is None else np.vstack((self.pqcode, pqcode))
 
         if compute_distortions: # recomputed if we train on subspace and add other data
-            if self.optimize_partitions:
+            if self.part_opt_alg:
                 data = data[:, self.cols_perm]
             self.avg_dist = np.zeros((self.M, self.K), np.float32)
             for m in range(self.M):
@@ -184,7 +196,7 @@ class PQ:
         assert self.codebook is not None, "The quantizer must be trained before compressing."
         assert data.shape[1] == self.D, "Data dimensions must match trained data dimensions."
 
-        if self.optimize_partitions:
+        if self.part_opt_alg:
             data = data[:, self.cols_perm] # NOTE: permuta
 
         compressed = np.empty((data.shape[0], self.M), self.code_inttype)
@@ -218,7 +230,7 @@ class PQ:
         if subset is None:
             subset = slice(None)
 
-        if self.optimize_partitions:
+        if self.part_opt_alg:
             query = query[self.cols_perm]
 
         dist_table = np.empty((self.M, self.K), np.float32)
@@ -242,7 +254,7 @@ class PQ:
 class IVF:
     def __init__(self, Kp: int = 1024, M:int = 8, K:int = 256,
         kmeans_iter:int = 300, kmeans_minit:str = "k-means++",
-        seed:int = None, optimize_partitions=False, bisectingkmeans=False):
+        seed:int = None, part_opt_alg:str = None, bisectingkmeans: bool = False):
         """
         Inverted File (IVF) implementation with Product Quantization (PQ).
     
@@ -267,7 +279,7 @@ class IVF:
         self.centroids = None
         self.inertia = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
-                     kmeans_minit=self.kmeans_minit, seed=None, optimize_partitions=optimize_partitions)
+                     kmeans_minit=self.kmeans_minit, seed=None, part_opt_alg=part_opt_alg)
 
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
