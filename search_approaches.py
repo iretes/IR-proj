@@ -68,9 +68,9 @@ class PQ:
             self.col_cluster_sizes = np.full(self.M, self.Ds)
             self.cols_perm = np.arange(data.shape[1])  # identity permutation
 
-    def plot_neighbor_distances(self, data: np.ndarray, n_neighbors: int,
+    def plot_neighbor_distances(self, data: np.ndarray, neighbor: int,
         ax: plt.Axes) -> None:
-        """Plot the distances to the n_neighbors-th nearest neighbor for each
+        """Plot the distances to the neighbor-th nearest neighbor for each
         vector in the dataset in each subspace."""
         
         self.D = data.shape[1]
@@ -82,29 +82,46 @@ class PQ:
 
         for m in range(self.M):
             data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
-            knn = NearestNeighbors(n_neighbors=n_neighbors).fit(data_sub)
+            knn = NearestNeighbors(n_neighbors=neighbor).fit(data_sub)
             distances, _ = knn.kneighbors(data_sub)
             ax.plot(np.sort(distances[:, -1]), label=f"Subspace {m+1}")
-        ax.set_ylabel(f"{n_neighbors}-th nearest neighbor distance")
+        ax.set_ylabel(f"{neighbor}-th nearest neighbor distance")
         ax.set_xlabel("Vectors")
         ax.legend()
 
-    def _compute_clustering_weights(self, data: np.ndarray,
-        n_neighbors: int) -> np.ndarray:
-        """Compute weights for KMeans clustering based on the distance to the
-        n_neighbors-th nearest neighbor."""
-        
-        knn = NearestNeighbors(n_neighbors=n_neighbors).fit(data)
-        distances, _ = knn.kneighbors(data)
-        weights = distances[:, -1]
-        weights /= np.max(weights)
+    def _neighbor_distances_to_weights(self, distances: np.ndarray,
+        inverse_weights: bool, weight_method: str) -> np.ndarray:
+        """Convert distances to weights for KMeans clustering."""
+
+        if weight_method == "normal":
+            weights = distances / np.max(distances)
+            if inverse_weights:
+                weights = 1 - weights
+        else:
+            distances = np.where(distances == 0, np.finfo(float).eps, distances)
+            if inverse_weights:
+                weights = 1 / distances
+            else:
+                weights = distances
+            weights = weights / np.max(weights)
         return weights
+
+    def _compute_clustering_weights(self, data: np.ndarray,
+        neighbor: int, inverse_weights: bool, weight_method: str) -> np.ndarray:
+        """Compute weights for KMeans clustering based on the distance to the
+        neighbor-th nearest neighbor."""
+        
+        knn = NearestNeighbors(n_neighbors=neighbor).fit(data)
+        distances, _ = knn.kneighbors(data)
+        return self._neighbor_distances_to_weights(distances[:, -1], inverse_weights, weight_method)
 
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
-        n_neighbors:int = 3, verbose:bool = False) -> None:
+        neighbor:int = 3, inverse_weights: bool = True, weight_method: str = "normal",
+        verbose:bool = False) -> None:
         """ Train the quantizer on the given data."""
-        
+
+        # TODO: assert sui nuovi parametri
         self.D = data.shape[1]
         assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
         self.Ds = int(self.D / self.M)
@@ -125,7 +142,7 @@ class PQ:
             data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
             sample_weight = None
             if weight_samples:
-                sample_weight = self._compute_clustering_weights(data_sub, n_neighbors)
+                sample_weight = self._compute_clustering_weights(data_sub, neighbor, inverse_weights, weight_method)
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
                 random_state=self.seed, max_iter=self.kmeans_iter)
             km = km.fit(data_sub, sample_weight=sample_weight)
@@ -254,7 +271,8 @@ class IVF:
 
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
-        n_neighbors:int = 3, verbose:bool = False) -> None:
+        neighbor:int = 3, inverse_weights: bool = True,
+        weight_method: str = "normal", verbose:bool = False) -> None:
         """Train the IVF on the given data."""
         
         assert data.shape[0] > self.Kp, "Number of vectors must be greater than the number of centroids."
@@ -279,7 +297,8 @@ class IVF:
         residuals = data - self.centroids[labels]
         self.pq.train(residuals, add=add,
             compute_distortions=compute_distortions,
-            weight_samples=weight_samples, n_neighbors=n_neighbors,
+            weight_samples=weight_samples, neighbor=neighbor,
+            inverse_weights=inverse_weights, weight_method=weight_method,
             verbose=verbose)
 
     # NOTE: una sola volta
