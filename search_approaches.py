@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit:str = "k-means++", seed:int = None,
-        part_opt_alg: str = None):
+        orth_transf: bool = False, part_opt_alg: str = None):
         """
         Product Quantization (PQ) implementation.
 
@@ -26,6 +26,8 @@ class PQ:
             avg_dist (numpy.ndarray): Average distortion for each cluster in each subspace.
             inertia (numpy.ndarray): Inertia of the KMeans clustering in each subspace.
             part_opt_alg (str): Algorithm for optimizing partitions.
+            orth_transf (bool): Apply orthogonal transformation to the data.
+            cols_perm (numpy.ndarray): Permutation of the columns.
             chunk_start (numpy.ndarray): Start index of each subspace in the data.
             col_cluster_sizes (numpy.ndarray): Number of vectors in each cluster.
         """
@@ -52,21 +54,25 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = None
+        self.orth_transf = orth_transf
         self.part_opt_alg = part_opt_alg
         self.chunk_start = None
         self.col_cluster_sizes = None
 
-    def _optimize_partitions(self, data: np.ndarray) -> None:
+    def _optimize_partitions(self, data: np.ndarray,
+        col_labels: np.ndarray = None) -> None:
         """Optimize the partitions of the data based on the KMeans clustering of
         the columns."""
         
         if self.part_opt_alg:
-            if self.part_opt_alg == "sbc":
+            if self.part_opt_alg == "custom":
+                self.col_labels = col_labels
+            elif self.part_opt_alg == "sbc":
                 sbc = SpectralBiclustering(n_clusters=(self.K, self.M),
                     n_init=1, random_state=self.seed) # TODO: altri param?
                 sbc.fit(data)
                 self.col_labels = sbc.column_labels_
-            else:
+            elif self.part_opt_alg == "km":
                 km = KMeans(n_clusters=self.M, init=self.kmeans_minit,
                     n_init=1, random_state=self.seed, max_iter=self.kmeans_iter)
                 km = km.fit(data.T)
@@ -89,7 +95,7 @@ class PQ:
         assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
         self.Ds = int(self.D / self.M)
 
-        self._optimize_partitions(data)
+        self._optimize_partitions(data, None)
         data = data[:, self.cols_perm]
 
         for m in range(self.M):
@@ -130,7 +136,7 @@ class PQ:
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
         neighbor:int = 3, inverse_weights: bool = True, weight_method: str = "normal",
-        verbose:bool = False) -> None:
+        col_labels: np.ndarray = None, verbose:bool = False) -> None:
         """ Train the quantizer on the given data."""
 
         # TODO: assert sui nuovi parametri
@@ -141,13 +147,21 @@ class PQ:
         self.inertia = np.empty((self.M))
         self.pqcode = None # if train is called twice, previous codes are discarded
         self.avg_dist = None
+        if self.part_opt_alg == "custom":
+            assert col_labels is not None, "Column labels must be provided for partition optimization."
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M), self.code_inttype)
             if compute_distortions:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
 
-        self._optimize_partitions(data)
+        if self.orth_transf:
+            rng = np.random.default_rng(self.seed)
+            A = rng.random((self.D, self.D))
+            self.Q, _ = np.linalg.qr(A)
+            data = np.dot(data, self.Q)
+
+        self._optimize_partitions(data, col_labels)
         data = data[:, self.cols_perm]
 
         for m in range(self.M):
@@ -196,6 +210,9 @@ class PQ:
         assert self.codebook is not None, "The quantizer must be trained before compressing."
         assert data.shape[1] == self.D, "Data dimensions must match trained data dimensions."
 
+        if self.orth_transf:
+            data = np.dot(data, self.Q)
+
         if self.part_opt_alg:
             data = data[:, self.cols_perm] # NOTE: permuta
 
@@ -229,6 +246,9 @@ class PQ:
 
         if subset is None:
             subset = slice(None)
+
+        if self.orth_transf:
+            query = np.dot(query, self.Q)
 
         if self.part_opt_alg:
             query = query[self.cols_perm]
@@ -284,7 +304,8 @@ class IVF:
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
         neighbor:int = 3, inverse_weights: bool = True,
-        weight_method: str = "normal", verbose:bool = False) -> None:
+        weight_method: str = "normal", col_labels: np.ndarray = None,
+        verbose:bool = False) -> None:
         """Train the IVF on the given data."""
         
         assert data.shape[0] > self.Kp, "Number of vectors must be greater than the number of centroids."
@@ -311,7 +332,7 @@ class IVF:
             compute_distortions=compute_distortions,
             weight_samples=weight_samples, neighbor=neighbor,
             inverse_weights=inverse_weights, weight_method=weight_method,
-            verbose=verbose)
+            col_labels=col_labels, verbose=verbose)
 
     # NOTE: una sola volta
     def add(self, data: np.ndarray, compute_distortions:bool = False) -> None:
