@@ -3,12 +3,14 @@ from scipy.cluster.vq import vq
 from sklearn.cluster import KMeans, BisectingKMeans, SpectralBiclustering
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit:str = "k-means++", seed:int = None,
-        orth_transf: bool = False, part_opt_alg: str = None):
+        orth_transf: bool = False, part_opt_alg: str = None,
+        PCA_transf: bool = False):
         """
         Product Quantization (PQ) implementation.
 
@@ -26,6 +28,7 @@ class PQ:
             avg_dist (numpy.ndarray): Average distortion for each cluster in each subspace.
             inertia (numpy.ndarray): Inertia of the KMeans clustering in each subspace.
             part_opt_alg (str): Algorithm for optimizing partitions.
+            PCA_transf (bool): Apply PCA transformation to the data.
             orth_transf (bool): Apply orthogonal transformation to the data.
             cols_perm (numpy.ndarray): Permutation of the columns.
             chunk_start (numpy.ndarray): Start index of each subspace in the data.
@@ -56,6 +59,7 @@ class PQ:
         self.inertia = None
         self.orth_transf = orth_transf
         self.part_opt_alg = part_opt_alg
+        self.PCA_transf = PCA_transf
         self.chunk_start = None
         self.col_cluster_sizes = None
 
@@ -106,6 +110,25 @@ class PQ:
         ax.set_ylabel(f"{neighbor}-th nearest neighbor distance")
         ax.set_xlabel("Vectors")
         ax.legend()
+    
+    def plot_variance_explained(self, data: np.ndarray) -> None:
+        """Plot the variance explained by each principal component for each
+        subspace."""
+        
+        self.D = data.shape[1]
+        assert self.D % self.M == 0, "Feature dimension must be divisible by the number of subspaces (M)."
+        self.Ds = int(self.D / self.M)
+
+        self._optimize_partitions(data, None)
+        data = data[:, self.cols_perm]
+
+        for m in range(self.M):
+            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            pca = PCA().fit(data_sub)
+            plt.plot(pca.explained_variance_ratio_, label=f"Subspace {m+1}")
+        plt.ylabel("Variance explained")
+        plt.xlabel("Principal components")
+        plt.legend()
 
     def _neighbor_distances_to_weights(self, distances: np.ndarray,
         inverse_weights: bool, weight_method: str) -> np.ndarray:
@@ -135,7 +158,8 @@ class PQ:
 
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
-        neighbor:int = 3, inverse_weights: bool = True, weight_method: str = "normal",
+        neighbor:int = 3, inverse_weights: bool = True,
+        weight_method: str = "normal", num_dims: int = None,
         col_labels: np.ndarray = None, verbose:bool = False) -> None:
         """ Train the quantizer on the given data."""
 
@@ -155,6 +179,10 @@ class PQ:
             if compute_distortions:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
 
+        if self.PCA_transf:
+            self.pca = PCA().fit(data)
+            data = self.pca.transform(data)
+
         if self.orth_transf:
             rng = np.random.default_rng(self.seed)
             A = rng.random((self.D, self.D))
@@ -170,13 +198,22 @@ class PQ:
             if weight_samples:
                 sample_weight = self._compute_clustering_weights(data_sub, neighbor, inverse_weights, weight_method)
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
-                random_state=self.seed, max_iter=self.kmeans_iter)
-            km = km.fit(data_sub, sample_weight=sample_weight)
+                        random_state=self.seed, max_iter=self.kmeans_iter)
+            if num_dims:
+                pca = PCA().fit(data_sub)
+                data_sub_red = pca.transform(data_sub)
+                data_sub_red = data_sub_red[:, :num_dims]
+                km = km.fit(data_sub_red, sample_weight=sample_weight)
+                cluster_centers = np.matmul(km.cluster_centers_, pca.components_[ : num_dims, : ]) + pca.mean_
+                self.codebook.append(cluster_centers)
+            else:
+                km = km.fit(data_sub, sample_weight=sample_weight)
+                self.codebook.append(km.cluster_centers_)
             self.inertia[m] = km.inertia_
+            
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {km.n_iter_} iterations with an inertia of {km.inertia_}.")
             
-            self.codebook.append(km.cluster_centers_)
             if add:
                 self.pqcode[:, m], _ = vq(data_sub, self.codebook[m])
                 if compute_distortions:
@@ -209,6 +246,9 @@ class PQ:
 
         assert self.codebook is not None, "The quantizer must be trained before compressing."
         assert data.shape[1] == self.D, "Data dimensions must match trained data dimensions."
+
+        if self.PCA_transf:
+            data = self.pca.transform(data)
 
         if self.orth_transf:
             data = np.dot(data, self.Q)
@@ -246,6 +286,9 @@ class PQ:
 
         if subset is None:
             subset = slice(None)
+
+        if self.PCA_transf:
+            query = self.pca.transform(query.reshape(1, -1)).reshape(-1)
 
         if self.orth_transf:
             query = np.dot(query, self.Q)
@@ -304,8 +347,8 @@ class IVF:
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
         neighbor:int = 3, inverse_weights: bool = True,
-        weight_method: str = "normal", col_labels: np.ndarray = None,
-        verbose:bool = False) -> None:
+        weight_method: str = "normal", num_dims: int = None,
+        col_labels: np.ndarray = None, verbose:bool = False) -> None:
         """Train the IVF on the given data."""
         
         assert data.shape[0] > self.Kp, "Number of vectors must be greater than the number of centroids."
@@ -332,7 +375,7 @@ class IVF:
             compute_distortions=compute_distortions,
             weight_samples=weight_samples, neighbor=neighbor,
             inverse_weights=inverse_weights, weight_method=weight_method,
-            col_labels=col_labels, verbose=verbose)
+            num_dims=num_dims, col_labels=col_labels, verbose=verbose)
 
     # NOTE: una sola volta
     def add(self, data: np.ndarray, compute_distortions:bool = False) -> None:
