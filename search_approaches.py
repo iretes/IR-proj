@@ -10,7 +10,7 @@ class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit:str = "k-means++", seed:int = None,
         orth_transf: bool = False, part_opt_alg: str = None,
-        PCA_transf: bool = False):
+        dim_reduction: bool = False):
         """
         Product Quantization (PQ) implementation.
 
@@ -28,7 +28,7 @@ class PQ:
             avg_dist (numpy.ndarray): Average distortion for each cluster in each subspace.
             inertia (numpy.ndarray): Inertia of the KMeans clustering in each subspace.
             part_opt_alg (str): Algorithm for optimizing partitions.
-            PCA_transf (bool): Apply PCA transformation to the data.
+            dim_reduction (bool): Apply PCA transformation to the data.
             orth_transf (bool): Apply orthogonal transformation to the data.
             cols_perm (numpy.ndarray): Permutation of the columns.
             chunk_start (numpy.ndarray): Start index of each subspace in the data.
@@ -59,7 +59,7 @@ class PQ:
         self.inertia = None
         self.orth_transf = orth_transf
         self.part_opt_alg = part_opt_alg
-        self.PCA_transf = PCA_transf
+        self.dim_reduction = dim_reduction
         self.chunk_start = None
         self.col_cluster_sizes = None
 
@@ -173,15 +173,14 @@ class PQ:
         self.avg_dist = None
         if self.part_opt_alg == "custom":
             assert col_labels is not None, "Column labels must be provided for partition optimization."
+        if self.dim_reduction:
+            assert num_dims is not None, "Number of dimensions must be provided for dimensionality reduction."
+            self.pcas = []
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M), self.code_inttype)
             if compute_distortions:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
-
-        if self.PCA_transf:
-            self.pca = PCA().fit(data)
-            data = self.pca.transform(data)
 
         if self.orth_transf:
             rng = np.random.default_rng(self.seed)
@@ -200,12 +199,16 @@ class PQ:
             km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
                         random_state=self.seed, max_iter=self.kmeans_iter)
             if num_dims:
-                pca = PCA().fit(data_sub)
+                pca = PCA(n_components=num_dims).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
                 data_sub_red = data_sub_red[:, :num_dims]
                 km = km.fit(data_sub_red, sample_weight=sample_weight)
-                cluster_centers = np.matmul(km.cluster_centers_, pca.components_[ : num_dims, : ]) + pca.mean_
-                self.codebook.append(cluster_centers)
+                if self.dim_reduction:
+                    self.pcas.append(pca)
+                    self.codebook.append(km.cluster_centers_)
+                else:
+                    cluster_centers = np.matmul(km.cluster_centers_, pca.components_[ :num_dims, :]) + pca.mean_
+                    self.codebook.append(cluster_centers)
             else:
                 km = km.fit(data_sub, sample_weight=sample_weight)
                 self.codebook.append(km.cluster_centers_)
@@ -247,9 +250,6 @@ class PQ:
         assert self.codebook is not None, "The quantizer must be trained before compressing."
         assert data.shape[1] == self.D, "Data dimensions must match trained data dimensions."
 
-        if self.PCA_transf:
-            data = self.pca.transform(data)
-
         if self.orth_transf:
             data = np.dot(data, self.Q)
 
@@ -258,7 +258,10 @@ class PQ:
 
         compressed = np.empty((data.shape[0], self.M), self.code_inttype)
         for m in range(self.M):
-            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            if self.dim_reduction:
+                data_sub = self.pcas[m].transform(data[:, self.chunk_start[m] : self.chunk_start[m+1]])
+            else:
+                data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
             compressed[:, m], _ = vq(data_sub, self.codebook[m])
         return compressed
     
@@ -287,9 +290,6 @@ class PQ:
         if subset is None:
             subset = slice(None)
 
-        if self.PCA_transf:
-            query = self.pca.transform(query.reshape(1, -1)).reshape(-1)
-
         if self.orth_transf:
             query = np.dot(query, self.Q)
 
@@ -298,7 +298,10 @@ class PQ:
 
         dist_table = np.empty((self.M, self.K), np.float32)
         for m in range(self.M):
-            query_sub = query[self.chunk_start[m] : self.chunk_start[m+1]]
+            if self.dim_reduction:
+                query_sub = self.pcas[m].transform([query[self.chunk_start[m] : self.chunk_start[m+1]]]).reshape(-1)
+            else:
+                query_sub = query[self.chunk_start[m] : self.chunk_start[m+1]]
             if not asym:
                 query_sub_code, _ = vq([query_sub], self.codebook[m])
                 query_sub = self.codebook[m][query_sub_code[0]]
@@ -317,7 +320,8 @@ class PQ:
 class IVF:
     def __init__(self, Kp: int = 1024, M:int = 8, K:int = 256,
         kmeans_iter:int = 300, kmeans_minit:str = "k-means++",
-        seed:int = None, part_opt_alg:str = None, bisectingkmeans: bool = False):
+        seed:int = None, part_opt_alg:str = None, dim_reduction: bool = False,
+        bisectingkmeans: bool = False):
         """
         Inverted File (IVF) implementation with Product Quantization (PQ).
     
@@ -342,7 +346,8 @@ class IVF:
         self.centroids = None
         self.inertia = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
-                     kmeans_minit=self.kmeans_minit, seed=None, part_opt_alg=part_opt_alg)
+                     kmeans_minit=self.kmeans_minit, seed=None,
+                     part_opt_alg=part_opt_alg, dim_reduction=dim_reduction)
 
     def train(self, data: np.ndarray, add:bool = True,
         compute_distortions:bool = False, weight_samples:bool = False,
