@@ -9,92 +9,118 @@ import matplotlib.pyplot as plt
 class PQ:
     """
     Product Quantization (PQ) implementation.
-
-    Parameters
-    ----------
-
-    M : int, default=8
-        Number of subspaces.
-    
-    K : int, default=256
-        Number of clusters per subspace.
-    
-    kmeans_iter : int, default=300
-        Maximum number of iterations for KMeans.
-    
-    kmeans_minit : str, default='k-means++'
-        Method for KMeans initialization.
-        See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
-    
-    seed : int, default None
-        Random seed.
-    
-    orth_transf : bool, default=False
-        Apply orthogonal transformation to the data.
-    
-    part_alg : str, default=None
-        Algorithm for partitioning the features into subspaces.
-        * None : Equally partition the features into subspaces.
-        * 'custom' : Custom partitioning, column labels must be provided to
-            the train method.
-        * 'sbc' : Spectral Biclustering of the data.
-        * 'km' : KMeans clustering of the columns.
-
-    dim_reduction : bool, default=False
-        Apply PCA transformation to reduce dimensionality of each subspace.
-
-    Attributes
-    ----------
-
-    code_inttype : numpy.dtype
-        Integer type for storing codes.
-    
-    Ds : int
-        Dimension of each subspace, when self.part_alg is None (equal
-        partitioning).
-    
-    D : int
-        Number of features.
-    
-    codebook : list of numpy.ndarray
-        Cluster centroids for each subspace.
-    
-    pqcode : numpy.ndarray
-        Quantized representation of the data.
-    
-    avg_dist : numpy.ndarray
-        Average distortion (average squared euclidean distance from the
-        centroid) for each cluster in each subspace of the data added to the
-        database.
-    
-    inertia : numpy.ndarray
-        Inertia of the KMeans clustering in each subspace (sum of squared
-        distances of samples to their closest cluster center, weighted by the
-        sample weights if provided).
-    
-    features_labels : numpy.ndarray
-        Cluster labels of the features for partitioning.
-    
-    features_cluster_sizes : numpy.ndarray
-        Number of features in each subspace.
-    
-    chunk_start : numpy.ndarray
-        Start index of each subspace in the data.
-    
-    features_perm : numpy.ndarray
-        Permutation of the features to match the partitioning.
-    
-    pcas : list of PCA
-        PCA instances for dimensionality reduction.
-    
-    Q : numpy.ndarray
-        Orthogonal transformation matrix.
-    
     """
+
+    M: int
+    """
+    Number of subspaces.
+    """
+    K: int
+    """
+    Number of clusters per subspace.
+    """
+    kmeans_iter: int
+    """
+    Maximum number of iterations for KMeans.
+    """
+    kmeans_minit: str
+    """
+    Method for KMeans initialization.
+    """
+    seed: int
+    """
+    Random seed.
+    """
+    orth_transf: bool
+    """
+    Apply orthogonal transformation to the data.
+    """
+    part_alg: str
+    """
+    Algorithm for partitioning the features into subspaces.
+    """
+    dim_reduction: bool
+    """
+    Apply PCA transformation to reduce dimensionality of each subspace.
+    """
+    Ds: int
+    """
+    Dimension of each subspace, when `self.part_alg` is None (equal
+    partitioning).
+    """
+    D: int
+    """
+    Number of features.
+    """
+    codebook: list[np.ndarray]
+    """
+    Cluster centroids for each subspace.
+    """
+    pqcode: np.ndarray
+    """
+    Quantized representation of the data added to the database.
+    """
+    avg_dist: np.ndarray
+    """
+    Average distortion (average squared euclidean distance from the centroid)
+    for each cluster in each subspace of the data added to the database.
+    """
+    inertia: np.ndarray
+    """
+    Inertia of the KMeans clustering in each subspace (sum of squared distances
+    of samples to their closest cluster center, weighted by the sample weights
+    if provided).
+    """
+    features_labels: np.ndarray
+    """
+    Cluster labels of the features for partitioning.
+    """
+    features_cluster_sizes: np.ndarray
+    """
+    Number of features in each subspace.
+    """
+
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit: str = "k-means++", seed: int = None,
         orth_transf: bool = False, part_alg: str = None,
         dim_reduction: bool = False):
+        """
+        Constructor.
+
+        Parameters
+        ----------
+
+        M : int, default=8
+            Number of subspaces.
+        
+        K : int, default=256
+            Number of clusters per subspace.
+        
+        kmeans_iter : int, default=300
+            Maximum number of iterations for KMeans.
+        
+        kmeans_minit : str, default='k-means++'
+            Method for KMeans initialization.
+            See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
+        
+        seed : int, default None
+            Random seed.
+        
+        orth_transf : bool, default=False
+            Apply orthogonal transformation to the data.
+        
+        part_alg : str, default=None
+            Algorithm for partitioning the features into subspaces.
+            * None: Equally partition the features into subspaces.
+            * 'custom': Custom partitioning, column labels must be provided to
+                the train method.
+            * 'sbc': Spectral Biclustering of the data.
+            * 'km': KMeans clustering of the columns.
+
+        dim_reduction : bool, default=False
+            Apply PCA transformation to reduce dimensionality of each subspace.
+
+        """
 
         if M <= 0:
             raise ValueError("M must be greater than 0.")
@@ -113,7 +139,7 @@ class PQ:
         self.part_alg = part_alg
         self.dim_reduction = dim_reduction
 
-        K_bits = np.log2(self.K-1) # TODO: parte intera?
+        K_bits = np.log2(self.K-1)
         if K_bits <= 8:
             self.code_inttype = np.uint8
         elif K_bits <= 16:
@@ -131,10 +157,10 @@ class PQ:
         self.inertia = None
         self.features_labels = None
         self.features_cluster_sizes = None
-        self.chunk_start = None
-        self.features_perm = None
-        self.pcas = None
-        self.Q = None
+        self._chunk_start = None
+        self._features_perm = None
+        self._pcas = None
+        self._Q = None
 
     def _compute_partitions(self, data: np.ndarray,
         features_labels: np.ndarray = None) -> None:
@@ -159,7 +185,7 @@ class PQ:
                 self.features_labels = features_labels
             elif self.part_alg == "sbc":
                 sbc = SpectralBiclustering(n_clusters=(self.K, self.M),
-                    n_init=1, random_state=self.seed) # TODO: altri param?
+                    n_init=1, random_state=self.seed)
                 sbc.fit(data)
                 self.features_labels = sbc.column_labels_
             elif self.part_alg == "km":
@@ -169,13 +195,13 @@ class PQ:
                 self.features_labels = km.labels_
             _, self.features_cluster_sizes = np.unique(self.features_labels,
                 return_counts=True)
-            self.chunk_start = np.zeros(self.M+1, dtype=int)
-            self.chunk_start[1:] = np.cumsum(self.features_cluster_sizes)
-            self.features_perm = np.argsort(self.features_labels)
+            self._chunk_start = np.zeros(self.M+1, dtype=int)
+            self._chunk_start[1:] = np.cumsum(self.features_cluster_sizes)
+            self._features_perm = np.argsort(self.features_labels)
         else:
             self.features_cluster_sizes = np.full(self.M, self.Ds)
-            self.chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
-            self.features_perm = np.arange(data.shape[1])  # identity permutation
+            self._chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
+            self._features_perm = np.arange(data.shape[1])  # identity permutation
 
     def _neighbor_distances_to_weights(self, distances: np.ndarray,
         inverse_weights: bool, weight_method: str) -> np.ndarray:
@@ -195,8 +221,8 @@ class PQ:
 
         weight_method : str
             Method for computing weights:
-            * 'normal' : Normalize the distances to [0, 1].
-            * 'reciprocal' : If inverse_weights is True, compute the reciprocal
+            * 'normal': Normalize the distances to [0, 1].
+            * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
                 of the distances and normalize to [0, 1], otherwise normalize
                 the distances to [0, 1].
 
@@ -243,8 +269,8 @@ class PQ:
 
         weight_method : str
             Method for computing weights:
-            * 'normal' : Normalize the distances to [0, 1].
-            * 'reciprocal' : If inverse_weights is True, compute the reciprocal
+            * 'normal': Normalize the distances to [0, 1].
+            * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
                 of the distances and normalize to [0, 1], otherwise normalize
                 the distances to [0, 1].
 
@@ -281,7 +307,7 @@ class PQ:
 
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
-            (if add is also True).
+            (if `add` is also True).
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -289,9 +315,9 @@ class PQ:
 
         num_dims : int, default=None
             Number of dimensions in each subspace after PCA dimensionality
-            reduction. If self.dim_reduction is False, but num_dims is provided,
-            centroids are computed in the reduced space and then transformed
-            back to the original space.
+            reduction. If `self.dim_reduction` is False, but `num_dims` is
+            provided, centroids are computed in the reduced space and then
+            transformed back to the original space.
 
         weight_samples : bool, default=False
             Weight samples while training KMeans based on the distance to
@@ -299,16 +325,16 @@ class PQ:
 
         neighbor : int, default=3
             Neighbor-th nearest neighbor for weighting samples (if
-            weight_samples is True).
+            `weight_samples` is True).
 
         inverse_weights : bool, default=True
             If True, the weights are inversely proportional to the distance to
-            the neighbor-th nearest neighbor (when weight_samples is True).
+            the neighbor-th nearest neighbor (when `weight_samples` is True).
 
         weight_method : str, default='normal'
             Method for computing weights (when weight_samples is True):
-            * 'normal' : Normalize the distances to [0, 1].
-            * 'reciprocal' : If inverse_weights is True, compute the reciprocal
+            * 'normal': Normalize the distances to [0, 1].
+            * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
                 of the distances and normalize to [0, 1], otherwise normalize
                 the distances to [0, 1].
 
@@ -350,20 +376,20 @@ class PQ:
         if self.orth_transf:
             rng = np.random.default_rng(self.seed)
             A = rng.random((self.D, self.D))
-            self.Q, _ = np.linalg.qr(A)
-            data = np.dot(data, self.Q)
+            self._Q, _ = np.linalg.qr(A)
+            data = np.dot(data, self._Q)
         
         if self.dim_reduction:
-            self.pcas = []
+            self._pcas = []
 
         self._compute_partitions(data, features_labels)
         if num_dims and self.features_cluster_sizes.min() < num_dims:
             raise ValueError("Number of dimensions for dimensionality reduction"
                 " must be less than the number of features in each subspace.")
-        data = data[:, self.features_perm]
+        data = data[:, self._features_perm]
 
         for m in range(self.M):
-            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             
             sample_weight = None
             if weight_samples:
@@ -378,7 +404,7 @@ class PQ:
                 data_sub_red = pca.transform(data_sub)
                 km = km.fit(data_sub_red, sample_weight=sample_weight)
                 if self.dim_reduction:
-                    self.pcas.append(pca)
+                    self._pcas.append(pca)
                     self.codebook.append(km.cluster_centers_)
                 else:
                     cluster_centers = pca.inverse_transform(km.cluster_centers_)
@@ -431,11 +457,11 @@ class PQ:
 
         if compute_distortions:
             if self.part_alg:
-                data = data[:, self.features_perm]
+                data = data[:, self._features_perm]
             
             self.avg_dist = np.zeros((self.M, self.K), np.float32)
             for m in range(self.M):
-                data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+                data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
                 for k in range(self.K):
                     dist = cdist(data_sub[self.pqcode[:, m] == k],
                         [self.codebook[m][k]], 'sqeuclidean')
@@ -467,16 +493,16 @@ class PQ:
                 " dimensions.")
 
         if self.orth_transf:
-            data = np.dot(data, self.Q)
+            data = np.dot(data, self._Q)
 
         if self.part_alg:
-            data = data[:, self.features_perm]
+            data = data[:, self._features_perm]
 
         compressed = np.empty((data.shape[0], self.M), self.code_inttype)
         for m in range(self.M):
-            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             if self.dim_reduction:
-                data_sub = self.pcas[m].transform(data_sub)
+                data_sub = self._pcas[m].transform(data_sub)
             compressed[:, m], _ = vq(data_sub, self.codebook[m])
         
         return compressed
@@ -509,17 +535,17 @@ class PQ:
         decompressed = np.empty((codes.shape[0], self.D), np.float32)
         for m in range(self.M):
             if self.dim_reduction:
-                decompressed[:, self.chunk_start[m] : self.chunk_start[m+1]] = \
-                    self.pcas[m].inverse_transform(self.codebook[m][codes[:, m]])
+                decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
+                    self._pcas[m].inverse_transform(self.codebook[m][codes[:, m]])
             else:
-                decompressed[:, self.chunk_start[m] : self.chunk_start[m+1]] = \
+                decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
                     self.codebook[m][codes[:, m]]
         
         if self.part_alg:
-            decompressed = decompressed[:, np.argsort(self.features_perm)]
+            decompressed = decompressed[:, np.argsort(self._features_perm)]
 
         if self.orth_transf:
-            decompressed = np.dot(decompressed, self.Q.T)
+            decompressed = np.dot(decompressed, self._Q.T)
         
         return decompressed
     
@@ -555,7 +581,7 @@ class PQ:
         
         idx : np.ndarray
             Indices of the database vectors sorted by distance in increasing
-            order, if sort is True.
+            order, if `sort` is True.
         
         """
 
@@ -580,16 +606,16 @@ class PQ:
             subset = slice(None)
 
         if self.orth_transf:
-            query = np.dot(query, self.Q)
+            query = np.dot(query, self._Q)
 
         if self.part_alg:
-            query = query[self.features_perm]
+            query = query[self._features_perm]
 
         dist_table = np.empty((self.M, self.K), np.float32)
         for m in range(self.M):
-            query_sub = query[self.chunk_start[m] : self.chunk_start[m+1]]
+            query_sub = query[self._chunk_start[m] : self._chunk_start[m+1]]
             if self.dim_reduction:
-                query_sub = self.pcas[m].transform([query_sub]).reshape(-1)
+                query_sub = self._pcas[m].transform([query_sub]).reshape(-1)
             if not asym:
                 query_sub_code, _ = vq([query_sub], self.codebook[m])
                 query_sub = self.codebook[m][query_sub_code[0]]
@@ -640,10 +666,10 @@ class PQ:
         self.Ds = int(self.D / self.M)
 
         self._compute_partitions(data, features_labels)
-        data = data[:, self.features_perm]
+        data = data[:, self._features_perm]
 
         for m in range(self.M):
-            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             knn = NearestNeighbors(n_neighbors=neighbor).fit(data_sub)
             distances, _ = knn.kneighbors(data_sub)
             ax.plot(np.sort(distances[:, -1]), label=f"Subspace {m+1}")
@@ -680,10 +706,10 @@ class PQ:
         self.Ds = int(self.D / self.M)
 
         self._compute_partitions(data, features_labels)
-        data = data[:, self.features_perm]
+        data = data[:, self._features_perm]
 
         for m in range(self.M):
-            data_sub = data[:, self.chunk_start[m] : self.chunk_start[m+1]]
+            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             pca = PCA().fit(data_sub)
             plt.plot(pca.explained_variance_ratio_, label=f"Subspace {m+1}")
         
@@ -695,71 +721,98 @@ class IVF:
     """
     Inverted File (IVF) implementation with Product Quantization (PQ).
 
-    Parameters
-    ----------
+    """
 
-    Kp: int, default=1024
-        Number of centroids for the coarse quantizer.
-
-    M : int, default=8
-        Number of subspaces for the PQ quantizer.
-    
-    K : int, default=256
-        Number of clusters per subspace for the PQ quantizer.
-    
-    kmeans_iter : int, default=300
-        Maximum number of iterations for KMeans.
-    
-    kmeans_minit : str, default='k-means++'
-        Method for KMeans initialization.
-        See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
-    
-    seed : int, default None
-        Random seed.
-    
-    orth_transf : bool, default=False
-        Apply orthogonal transformation to the data in the PQ quantizer.
-    
-    part_alg : str, default=None
-        Algorithm for partitioning the features into subspaces in the PQ
-        quantizer:
-        * None : Equally partition the features into subspaces.
-        * 'custom' : Custom partitioning, column labels must be provided to
-            the train method.
-        * 'sbc' : Spectral Biclustering of the data.
-        * 'km' : KMeans clustering of the columns.
-
-    dim_reduction : bool, default=False
-        Apply PCA transformation to reduce dimensionality of each subspace in 
-        the PQ quantizer.
-
-    bisectingkmeans : bool, default=False
-        Use BisectingKMeans instead of KMeans for the coarse quantizer.
-
-    Attributes
-    ----------
-
-    ivf : list of np.ndarray
-        Inverted index storing data indices assigned to each centroid.
-
-    num_els : int
-        Total number of vectors added to the index.
-
-    centroids : np.ndarray
-        Coarse quantizer cluster centroids.
-
-    pq : PQ
-        Product Quantizer instance for quantizing residuals.
-
-    inertia : float
-        Inertia of the KMeans clustering for the coarse quantizer.
-
+    Kp: int
+    """
+    Number of centroids for the coarse quantizer.
+    """
+    kmeans_iter: int
+    """
+    Maximum number of iterations for KMeans.
+    """
+    kmeans_minit: str
+    """
+    Method for KMeans initialization.
+    """
+    seed: int
+    """
+    Random seed.
+    """
+    bisectingkmeans: bool
+    """
+    Use BisectingKMeans instead of KMeans for the coarse quantizer.
+    """
+    ivf: list[np.ndarray]
+    """
+    Inverted index storing data indices assigned to each centroid.
+    """
+    num_els: int
+    """
+    Total number of vectors added to the index.
+    """
+    centroids: np.ndarray
+    """
+    Coarse quantizer cluster centroids.
+    """
+    pq: PQ
+    """
+    Product Quantizer instance for quantizing residuals.
+    """
+    inertia: float
+    """
+    Inertia of the KMeans clustering for the coarse quantizer.
     """
 
     def __init__(self, Kp: int = 1024, M: int = 8, K: int = 256,
         kmeans_iter: int = 300, kmeans_minit: str = "k-means++",
         seed: int = None, orth_transf: bool = False, part_alg: str = None,
         dim_reduction: bool = False, bisectingkmeans: bool = False):
+        """
+        Constructor.
+
+        Parameters
+        ----------
+
+        Kp: int, default=1024
+            Number of centroids for the coarse quantizer.
+
+        M : int, default=8
+            Number of subspaces for the PQ quantizer.
+        
+        K : int, default=256
+            Number of clusters per subspace for the PQ quantizer.
+        
+        kmeans_iter : int, default=300
+            Maximum number of iterations for KMeans.
+        
+        kmeans_minit : str, default='k-means++'
+            Method for KMeans initialization.
+            See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
+        
+        seed : int, default None
+            Random seed.
+        
+        orth_transf : bool, default=False
+            Apply orthogonal transformation to the data in the PQ quantizer.
+        
+        part_alg : str, default=None
+            Algorithm for partitioning the features into subspaces in the PQ
+            quantizer:
+            * None: Equally partition the features into subspaces.
+            * 'custom': Custom partitioning, column labels must be provided to
+                the train method.
+            * 'sbc': Spectral Biclustering of the data.
+            * 'km': KMeans clustering of the columns.
+
+        dim_reduction : bool, default=False
+            Apply PCA transformation to reduce dimensionality of each subspace
+            in the PQ quantizer.
+
+        bisectingkmeans : bool, default=False
+            Use BisectingKMeans instead of KMeans for the coarse quantizer.
+
+        """
 
         if Kp <= 0:
             raise ValueError("Kp must be greater than 0.")
@@ -797,7 +850,7 @@ class IVF:
 
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
-            (if add is also True) for the PQ quantizer.
+            (if `add` is also True) for the PQ quantizer.
 
         weight_samples : bool, default=False
             Weight samples while training KMeans based on the distance to
@@ -805,23 +858,23 @@ class IVF:
 
         neighbor : int, default=3
             Neighbor-th nearest neighbor for weighting samples (if
-            weight_samples is True).
+            `weight_samples` is True).
 
         inverse_weights : bool, default=True
             If True, the weights are inversely proportional to the distance to
-            the neighbor-th nearest neighbor (when weight_samples is True).
+            the neighbor-th nearest neighbor (when `weight_samples` is True).
 
         weight_method : str, default='normal'
             Method for computing weights (when weight_samples is True):
-            * 'normal' : Normalize the distances to [0, 1].
-            * 'reciprocal' : If inverse_weights is True, compute the reciprocal
+            * 'normal': Normalize the distances to [0, 1].
+            * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
                 of the distances and normalize to [0, 1], otherwise normalize
                 the distances to [0, 1].
         
         num_dims : int, default=None
             Number of dimensions in each subspace after PCA dimensionality
-            reduction for the PQ quantizer. If self.dim_reduction is False,
-            but num_dims is provided, centroids are computed in the reduced
+            reduction for the PQ quantizer. If `self.dim_reduction` is False,
+            but `num_dims` is provided, centroids are computed in the reduced
             space and then transformed back to the original space.
 
         features_labels : np.ndarray, default=None
@@ -922,11 +975,11 @@ class IVF:
 
         dists : np.ndarray
             Distances of the query to the database vectors, sorted in increasing
-            order if sort is True.
+            order if `sort` is True.
         
         idx : np.ndarray
             Indices of the database vectors sorted by distance in increasing
-            order, if sort is True.
+            order, if `sort` is True.
         
         """
 
@@ -972,15 +1025,24 @@ class ExactSearch:
     """
     Exact search implementation.
 
-    Parameters
-    ----------
+    """
 
-    data : np.ndarray
-        The dataset in which to search.
-    
+    data: np.ndarray
+    """
+    The dataset in which to search.
     """
 
     def __init__(self, data: np.ndarray):
+        """
+        Constructor.
+
+        Parameters
+        ----------
+
+        data : np.ndarray
+            The dataset in which to search.
+        
+        """
         self.data = data
 
     def search(self, query: np.ndarray, sort: bool = True) \
@@ -1005,7 +1067,7 @@ class ExactSearch:
 
         idx : np.ndarray
             Indices of the dataset vectors sorted by distance in increasing
-            order, if sort is True.
+            order, if `sort` is True.
         
         """
         

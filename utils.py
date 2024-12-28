@@ -20,7 +20,7 @@ def load_sift(name="siftsmall", dir="siftsmall"):
 
     return xb, xq, xt, gt
 
-def NDCG(ranking, exact_ranking):
+def NDCG(ranking, exact_ranking): # TODO: utile?
     """Compute the Normalized Discounted Cumulative Gain."""
     dcg = 0
     idcg = 0
@@ -31,7 +31,7 @@ def NDCG(ranking, exact_ranking):
             idcg += 1 / np.log2(i+2)
     return dcg / idcg
 
-def recall_at_r(ranking, exact_ranking, r): # TODO: è analogo a precision?
+def recall_at_r(ranking, exact_ranking, r):
     """Compute the Recall@R."""
     return len(set(ranking[:r]) & set(exact_ranking[:r])) / r
 
@@ -130,11 +130,5 @@ def sankey_plot(
         plot_bgcolor='rgba(0,0,0,0)',
         font_size=10
     )
-
-    # file_name = f'../html/sankey'
-    # if title is not None:
-    #     camel_title = title.replace(' ', '_')
-    #     file_name += f'_{camel_title}'
-    # file_name += '.html'
-    # pyo.plot(fig, filename=file_name, auto_open=False)
+    
     fig.show()

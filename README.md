@@ -17,3 +17,10 @@ unzip glove.6B.zip -d glove
 # Create the glove dataset
 python create_glove_dataset.py
 ```
+
+## Extra
+
+The documentation was generated using the following command:
+```bash
+pdoc -d numpy -o docs/ search_approaches.py
+```
