@@ -14,7 +14,7 @@ tar -xvzf sift.tar.gz
 # Download the glove dataset
 wget https://huggingface.co/stanfordnlp/glove/resolve/main/glove.6B.zip -O glove.6B.zip
 unzip glove.6B.zip -d glove
-# Create the glove dataset
+# Subsample the glove dataset and convert it to numpy arrays
 python create_glove_dataset.py
 ```
 
