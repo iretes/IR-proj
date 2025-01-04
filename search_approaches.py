@@ -79,6 +79,10 @@ class PQ:
     """
     Number of features in each subspace.
     """
+    energy_std: np.ndarray
+    """
+    Average energy (the sum of squared components) within each subspace.
+    """
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit: str = "k-means++", seed: int = None,
@@ -160,7 +164,8 @@ class PQ:
         self._chunk_start = None
         self._features_perm = None
         self._pcas = None
-        self._Q = None
+        self._O = None
+        self.energy_std = None
 
     def _compute_partitions(self, data: np.ndarray,
         features_labels: np.ndarray = None) -> None:
@@ -289,8 +294,9 @@ class PQ:
         return weights
 
     def train(self, data: np.ndarray, add: bool = True,
-        compute_distortions: bool = False, features_labels: np.ndarray = None,
-        num_dims: int = None, weight_samples: bool = False, neighbor: int = 3,
+        compute_distortions: bool = False, compute_energy: bool = False,
+        features_labels: np.ndarray = None, num_dims: int = None,
+        weight_samples: bool = False, neighbor: int = 3,
         inverse_weights: bool = True, weight_method: str = "normal", 
         verbose: bool = False) -> None:
         """
@@ -308,6 +314,10 @@ class PQ:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             (if `add` is also True).
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -374,10 +384,9 @@ class PQ:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
         
         if self.orth_transf:
-            rng = np.random.default_rng(self.seed)
-            A = rng.random((self.D, self.D))
-            self._Q, _ = np.linalg.qr(A)
-            data = np.dot(data, self._Q)
+            from scipy.stats import ortho_group
+            self._O = ortho_group.rvs(dim=self.D)
+            data = np.dot(data, self._O)
         
         if self.dim_reduction:
             self._pcas = []
@@ -387,6 +396,10 @@ class PQ:
             raise ValueError("Number of dimensions for dimensionality reduction"
                 " must be less than the number of features in each subspace.")
         data = data[:, self._features_perm]
+
+        if add and compute_energy:
+            self.energy_std = self.compute_mean_energy(data,
+                compute_partitions=False)
 
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
@@ -427,7 +440,8 @@ class PQ:
                             [self.codebook[m][k]], 'sqeuclidean')
                         self.avg_dist[m, k] = np.mean(dist)
 
-    def add(self, data: np.ndarray, compute_distortions: bool = False) -> None:
+    def add(self, data: np.ndarray, compute_distortions: bool = False,
+        compute_energy: bool = False) -> None:
         """
         Add data to the database.
 
@@ -439,6 +453,10 @@ class PQ:
         
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace.
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
 
         Notes
         ----
@@ -455,10 +473,14 @@ class PQ:
 
         self.pqcode = self.compress(data)
 
+        if self.part_alg:
+            data = data[:, self._features_perm]
+
+        if compute_energy:
+            self.energy_std = self.compute_mean_energy(data,
+                compute_partitions=False)
+
         if compute_distortions:
-            if self.part_alg:
-                data = data[:, self._features_perm]
-            
             self.avg_dist = np.zeros((self.M, self.K), np.float32)
             for m in range(self.M):
                 data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
@@ -493,7 +515,7 @@ class PQ:
                 " dimensions.")
 
         if self.orth_transf:
-            data = np.dot(data, self._Q)
+            data = np.dot(data, self._O)
 
         if self.part_alg:
             data = data[:, self._features_perm]
@@ -545,7 +567,7 @@ class PQ:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
 
         if self.orth_transf:
-            decompressed = np.dot(decompressed, self._Q.T)
+            decompressed = np.dot(decompressed, self._O.T)
         
         return decompressed
     
@@ -606,7 +628,7 @@ class PQ:
             subset = slice(None)
 
         if self.orth_transf:
-            query = np.dot(query, self._Q)
+            query = np.dot(query, self._O)
 
         if self.part_alg:
             query = query[self._features_perm]
@@ -716,6 +738,54 @@ class PQ:
         plt.ylabel("Variance explained")
         plt.xlabel("Principal components")
         plt.legend()
+
+    def compute_mean_energy(self, data: np.ndarray,
+        compute_partitions: bool = True, features_labels: np.ndarray = None
+        ) -> None:
+        """
+        Compute the average energy (the sum of squared components) within each
+        subspace.
+
+        Parameters
+        ----------
+
+        data : np.ndarray
+            Data to compute the energy.
+
+        compute_partitions : bool, default=True
+            Compute the partitioning of the features into subspaces.
+
+        features_labels : np.ndarray, default=None
+            Features labels for custom partitioning of the features into
+            subspaces.
+
+        Returns
+        -------
+
+        energy_std : np.ndarray
+            Average energy in each subspace.
+        
+        """
+
+        if compute_partitions:
+            self.D = data.shape[1]
+            if self.D % self.M != 0:
+                raise ValueError("Feature dimension must be divisible by the number"
+                    " of subspaces (M).")
+            if features_labels is not None and features_labels.shape[0] != self.D:
+                raise ValueError("Feature labels must have the same number of"
+                    " features as the data.")
+            self.Ds = int(self.D / self.M)
+
+            self._compute_partitions(data, features_labels)
+            data = data[:, self._features_perm]
+
+        energy_std = np.zeros((self.M))
+        for m in range(self.M):
+            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
+            energy = np.sum(data_sub ** 2, axis=1)
+            energy_std[m] = np.mean(energy)
+        return energy_std
     
 class IVF:
     """
