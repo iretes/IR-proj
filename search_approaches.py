@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.cluster.vq import vq
-from sklearn.cluster import KMeans, BisectingKMeans, SpectralBiclustering
+from sklearn.cluster import (KMeans, BisectingKMeans, MiniBatchKMeans,
+    SpectralBiclustering)
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
@@ -809,9 +810,13 @@ class IVF:
     """
     Random seed.
     """
-    bisectingkmeans: bool
+    coarse_clust_alg: str
     """
-    Use BisectingKMeans instead of KMeans for the coarse quantizer.
+    The clustering algorithm to use for the coarse quantizer.
+    """
+    batch_size: int
+    """
+    Batch size for MiniBatchKMeans clustering of the coarse quantizer.
     """
     ivf: list[np.ndarray]
     """
@@ -837,7 +842,8 @@ class IVF:
     def __init__(self, Kp: int = 1024, M: int = 8, K: int = 256,
         kmeans_iter: int = 300, kmeans_minit: str = "k-means++",
         seed: int = None, orth_transf: bool = False, part_alg: str = None,
-        dim_reduction: bool = False, bisectingkmeans: bool = False):
+        dim_reduction: bool = False, coarse_clust_alg: str = "km",
+        batch_size: int = 1024):
         """
         Constructor.
 
@@ -879,8 +885,14 @@ class IVF:
             Apply PCA transformation to reduce dimensionality of each subspace
             in the PQ quantizer.
 
-        bisectingkmeans : bool, default=False
-            Use BisectingKMeans instead of KMeans for the coarse quantizer.
+        coarse_clust_alg : str, default='km'
+            The clustering algorithm to use for the coarse quantizer.
+            * 'km': KMenas clustering.
+            * 'mkm': MiniBatchKMeans clustering.
+            * 'bkm': BisectingKMeans clustering.
+
+        batch_size : int, default=1024
+            Batch size for MiniBatchKMeans clustering of the coarse quantizer.
 
         """
 
@@ -891,7 +903,13 @@ class IVF:
         self.kmeans_iter = kmeans_iter
         self.kmeans_minit = kmeans_minit
         self.seed = seed
-        self.bisectingkmeans = bisectingkmeans
+        if coarse_clust_alg not in ["km", "bkm", "mkm"]:
+            raise ValueError("Supported clustering algorithms for the coarse"
+                " quantizer are 'km', 'bkm', or 'mkm'.")
+        self.coarse_clust_alg = coarse_clust_alg
+        if batch_size <= 0:
+            raise ValueError("Batch size must be greater than 0.")
+        self.batch_size = batch_size
         
         self.ivf = None
         self.num_els = 0
@@ -963,15 +981,28 @@ class IVF:
         self.num_els = 0
         self.ivf = None
 
-        clust_alg = BisectingKMeans if self.bisectingkmeans else KMeans
-        km = clust_alg(n_clusters=self.Kp, init=self.kmeans_minit,
-            n_init=1, random_state=self.seed,
-            max_iter=self.kmeans_iter).fit(data)
+        clust_alg_params = {
+            "n_clusters": self.Kp,
+            "init": self.kmeans_minit,
+            "n_init": 1,
+            "random_state": self.seed,
+            "max_iter": self.kmeans_iter
+        }
+        if self.coarse_clust_alg == "km":
+            clust_alg = KMeans
+        elif self.coarse_clust_alg == "mkm":
+            clust_alg = MiniBatchKMeans
+            clust_alg_params["batch_size"] = self.batch_size
+        else:
+            clust_alg = BisectingKMeans
+        
+        km = clust_alg(**clust_alg_params).fit(data)
         self.inertia = km.inertia_
         
         if verbose:
-            print(f"KMeans for IVF converged in {km.n_iter_} iterations.")
-        
+            print(f"Coarse clustering algorithm converged in {km.n_iter_}"
+                " iterations.")
+
         self.centroids = km.cluster_centers_
         labels, _ = vq(data, self.centroids)
 
