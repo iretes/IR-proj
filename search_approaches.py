@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.cluster.vq import vq
+from sklearn.neighbors import NearestCentroid
 from sklearn.cluster import (KMeans, BisectingKMeans, MiniBatchKMeans,
     SpectralBiclustering)
 from sklearn.neighbors import NearestNeighbors
@@ -43,6 +44,10 @@ class PQ:
     dim_reduction: bool
     """
     Apply PCA transformation to reduce dimensionality of each subspace.
+    """
+    shrink_threshold: float
+    """
+    Threshold for shrinking centroids to remove features.
     """
     Ds: int
     """
@@ -88,7 +93,7 @@ class PQ:
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit: str = "k-means++", seed: int = None,
         orth_transf: bool = False, part_alg: str = None,
-        dim_reduction: bool = False):
+        dim_reduction: bool = False, shrink_threshold: float = None):
         """
         Constructor.
 
@@ -125,6 +130,9 @@ class PQ:
         dim_reduction : bool, default=False
             Apply PCA transformation to reduce dimensionality of each subspace.
 
+        shrink_threshold : float, default=None
+            Threshold for shrinking centroids to remove features.
+
         """
 
         if M <= 0:
@@ -134,6 +142,8 @@ class PQ:
         if part_alg not in [None, "custom", "sbc", "km"]:
             raise ValueError("Supported partitioning algorithms are 'custom',"
                 " 'sbc', or 'km'.")
+        if shrink_threshold and shrink_threshold < 0:
+            raise ValueError("Shrink threshold must be greater or equal to 0.")
 
         self.M = M
         self.K = K
@@ -143,6 +153,7 @@ class PQ:
         self.orth_transf = orth_transf
         self.part_alg = part_alg
         self.dim_reduction = dim_reduction
+        self.shrink_threshold = shrink_threshold
 
         K_bits = np.log2(self.K-1)
         if K_bits <= 8:
@@ -166,8 +177,9 @@ class PQ:
         self._features_perm = None
         self._pcas = None
         self._O = None
+        self._ncs = None
         self.energy_std = None
-
+        
     def _compute_partitions(self, data: np.ndarray,
         features_labels: np.ndarray = None) -> None:
         """
@@ -378,6 +390,9 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = np.empty((self.M))
+
+        if self.shrink_threshold:
+            self._ncs = []
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M), self.code_inttype)
@@ -419,20 +434,25 @@ class PQ:
                 km = km.fit(data_sub_red, sample_weight=sample_weight)
                 if self.dim_reduction:
                     self._pcas.append(pca)
-                    self.codebook.append(km.cluster_centers_)
                 else:
-                    cluster_centers = pca.inverse_transform(km.cluster_centers_)
-                    self.codebook.append(cluster_centers)
+                    km.cluster_centers_ = pca.inverse_transform(km.cluster_centers_)
             else:
                 km = km.fit(data_sub, sample_weight=sample_weight)
-                self.codebook.append(km.cluster_centers_)
 
             self.inertia[m] = km.inertia_
             
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {km.n_iter_}"
                     f" iterations with an inertia of {km.inertia_}.")
-            
+
+            if self.shrink_threshold:
+                nc = NearestCentroid(shrink_threshold=self.shrink_threshold)
+                nc = nc.fit(data_sub, km.labels_)
+                self._ncs.append(nc)
+                self.codebook.append(nc.centroids_)
+            else:
+                self.codebook.append(km.cluster_centers_)
+
             if add:
                 self.pqcode[:, m], _ = vq(data_sub, self.codebook[m])
                 if compute_distortions:
