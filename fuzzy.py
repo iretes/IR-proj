@@ -1,8 +1,10 @@
 import numpy as np
-from sklearn.cluster import KMeans
+from pyclustering.cluster.center_initializer import kmeans_plusplus_initializer
+from pyclustering.cluster.fcm import fcm
 from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
 from search_approaches import PQ
+from scipy.stats import ortho_group
 
 class FuzzyPQ(PQ):
     """
@@ -19,11 +21,7 @@ class FuzzyPQ(PQ):
     """
     kmeans_iter: int
     """
-    Maximum number of iterations for KMeans.
-    """
-    kmeans_minit: str
-    """
-    Method for KMeans initialization.
+    Maximum number of iterations for Fuzzy KMeans.
     """
     seed: int
     """
@@ -57,18 +55,11 @@ class FuzzyPQ(PQ):
     pqcode: np.ndarray
     """
     Quantized representation of the data added to the database (codes of the two
-    nearest centroids).
+    clusters with highest membership).
     """
-    weights: np.ndarray
+    membership: np.ndarray
     """
-    Weights of the codes corresponding to the nearest centroids for the data
-    added data in the database.
-    """
-    inertia: np.ndarray
-    """
-    Inertia of the KMeans clustering in each subspace (sum of squared distances
-    of samples to their closest cluster center, weighted by the sample weights
-    if provided).
+    Top-2 cluster memberships of the data added to the database.
     """
     features_labels: np.ndarray
     """
@@ -84,9 +75,8 @@ class FuzzyPQ(PQ):
     """
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
-        kmeans_minit: str = "k-means++", seed: int = None,
-        orth_transf: bool = False, part_alg: str = None,
-        dim_reduction: bool = False):
+        m: float = 2, seed: int = None, orth_transf: bool = False,
+        part_alg: str = None, dim_reduction: bool = False):
         """
         Constructor.
 
@@ -100,11 +90,12 @@ class FuzzyPQ(PQ):
             Number of clusters per subspace.
         
         kmeans_iter : int, default=300
-            Maximum number of iterations for KMeans.
-        
-        kmeans_minit : str, default='k-means++'
-            Method for KMeans initialization.
-            See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
+            Maximum number of iterations for Fuzzy KMeans.
+
+        m : float, default=2
+            Hyper-parameter that controls how fuzzy the cluster will be.
+            The higher it is, the fuzzier the cluster will be in the end.
+            This parameter should be greater than 1.
         
         seed : int, default None
             Random seed.
@@ -125,45 +116,62 @@ class FuzzyPQ(PQ):
 
         """
 
-        super().__init__(M, K, kmeans_iter, kmeans_minit, seed, orth_transf,
-            part_alg, dim_reduction)
-        self.weights = None
+        super().__init__(M=M, K=K, kmeans_iter=kmeans_iter, seed=seed,
+            orth_transf=orth_transf, part_alg=part_alg,
+            dim_reduction=dim_reduction)
+        self.m = m
+        self.membership = None
     
-    def _compute_nearest_codes(self, data: np.ndarray,
-        codebook: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Compute the distances to two closest codes for each vector in the data.
+    # def _compute_nearest_codes(self, data: np.ndarray,
+    #     codebook: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    #     """
+    #     Compute the distances to two closest codes for each vector in the data.
 
-        Parameters
-        ----------
+    #     Parameters
+    #     ----------
 
-        data : np.ndarray
-            Data to compute the distances to the closest codes.
+    #     data : np.ndarray
+    #         Data to compute the distances to the closest codes.
 
-        codebook : np.ndarray
-            Codebook.
+    #     codebook : np.ndarray
+    #         Codebook.
 
-        Returns
-        -------
+    #     Returns
+    #     -------
 
-        sorted_codes : np.ndarray
-            Codes of the two nearest centroids, sorted by distance.
+    #     sorted_codes : np.ndarray
+    #         Codes of the two nearest centroids, sorted by distance.
         
-        sorted_distances : np.ndarray
-            Distances to the two nearest centroids, sorted.
+    #     sorted_distances : np.ndarray
+    #         Distances to the two nearest centroids, sorted.
 
-        """
+    #     """
         
-        distances = cdist(data, codebook)
-        sorted_codes = np.argsort(distances, axis=1)
-        sorted_distances = np.take_along_axis(distances, sorted_codes, axis=1)
-        return sorted_codes[:, :2], sorted_distances[:, :2]
+    #     distances = cdist(data, codebook)
+    #     sorted_codes = np.argsort(distances, axis=1)
+    #     sorted_distances = np.take_along_axis(distances, sorted_codes, axis=1)
+    #     return sorted_codes[:, :2], sorted_distances[:, :2]
+    
+    def _compute_membership(self, data, centers): # TODO: add doc
+        membership = np.zeros((len(data), len(centers)))
+
+        data_difference = np.zeros((len(centers), len(data)))
+        for i in range(len(centers)):
+            data_difference[i] = np.sum(np.square(data - centers[i]), axis=1)
+
+        for i in range(len(data)):
+            for j in range(len(centers)):
+                divider = sum([pow(data_difference[j][i] / data_difference[k][i], self.m) for k in range(len(centers)) if data_difference[k][i] != 0.0])
+                if divider != 0.0:
+                    membership[i][j] = 1.0 / divider
+                else:
+                    membership[i][j] = 1.0
+
+        return membership
 
     def train(self, data: np.ndarray, add: bool = True,
         compute_energy: bool = False, features_labels: np.ndarray = None,
-        num_dims: int = None, weight_samples: bool = False, neighbor: int = 3,
-        inverse_weights: bool = True, weight_method: str = "normal", 
-        verbose: bool = False) -> None:
+        num_dims: int = None, verbose: bool = False) -> None:
         """
         Train the quantizer on the given data.
         
@@ -190,25 +198,6 @@ class FuzzyPQ(PQ):
             provided, centroids are computed in the reduced space and then
             transformed back to the original space.
 
-        weight_samples : bool, default=False
-            Weight samples while training KMeans based on the distance to
-            the neighbor-th nearest neighbor.
-
-        neighbor : int, default=3
-            Neighbor-th nearest neighbor for weighting samples (if
-            `weight_samples` is True).
-
-        inverse_weights : bool, default=True
-            If True, the weights are inversely proportional to the distance to
-            the neighbor-th nearest neighbor (when `weight_samples` is True).
-
-        weight_method : str, default='normal'
-            Method for computing weights (when weight_samples is True):
-            * 'normal': Normalize the distances to [0, 1].
-            * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
-                of the distances and normalize to [0, 1], otherwise normalize
-                the distances to [0, 1].
-
         verbose : bool, default=False
             Print training information.
 
@@ -227,24 +216,17 @@ class FuzzyPQ(PQ):
         if self.dim_reduction and num_dims is None:
             raise ValueError("Number of dimensions must be provided for"
                 " dimensionality reduction.")
-        if neighbor < 1:
-            raise ValueError("Neighbor must be greater than 0.")
-        if weight_method not in ["normal", "reciprocal"]:
-            raise ValueError("Supported weight methods are 'normal' and"
-                " 'reciprocal'.")
 
         self.Ds = int(self.D / self.M)
         self.codebook = []
         self.pqcode = None
-        self.weights = None
-        self.inertia = np.empty((self.M))
+        self.membership = None
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M, 2), self.code_inttype)
-            self.weights = np.empty((data.shape[0], self.M), np.float16)
+            self.membership = np.empty((data.shape[0], self.M, 2), np.float16)
         
         if self.orth_transf:
-            from scipy.stats import ortho_group
             self._O = ortho_group.rvs(dim=self.D)
             data = np.dot(data, self._O)
         
@@ -264,39 +246,40 @@ class FuzzyPQ(PQ):
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             
-            sample_weight = None
-            if weight_samples:
-                sample_weight = self._compute_clustering_weights(data_sub,
-                    neighbor, inverse_weights, weight_method)
-            
-            km = KMeans(n_clusters=self.K, init=self.kmeans_minit, n_init=1,
-                random_state=self.seed, max_iter=self.kmeans_iter)
-            
             if num_dims:
                 pca = PCA(n_components=num_dims).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
-                km = km.fit(data_sub_red, sample_weight=sample_weight)
+                initial_centers = kmeans_plusplus_initializer(data_sub_red,
+                    self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
+                    ).initialize()
+                fcm_inst = fcm(data_sub_red, initial_centers, m=self.m,
+                    itermax=self.kmeans_iter, ccore=False)
+                fcm_inst.process()
                 if self.dim_reduction:
                     self._pcas.append(pca)
-                    self.codebook.append(km.cluster_centers_)
+                    self.codebook.append(fcm_inst.get_centers())
                 else:
-                    cluster_centers = pca.inverse_transform(km.cluster_centers_)
+                    cluster_centers = pca.inverse_transform(fcm_inst.get_centers())
                     self.codebook.append(cluster_centers)
             else:
-                km = km.fit(data_sub, sample_weight=sample_weight)
-                self.codebook.append(km.cluster_centers_)
+                initial_centers = kmeans_plusplus_initializer(data_sub,
+                    self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
+                    ).initialize()
+                fcm_inst = fcm(data_sub, initial_centers, m=self.m,
+                    itermax=self.kmeans_iter, ccore=False)
+                fcm_inst.process()
+                self.codebook.append(fcm_inst.get_centers())
 
-            self.inertia[m] = km.inertia_
-            
             if verbose:
-                print(f"KMeans on subspace {m+1} converged in {km.n_iter_}"
-                    f" iterations with an inertia of {km.inertia_}.")
+                print(f"Subspace {m+1} trained.")
             
             if add:
-                sorted_codes, sorted_dists = self._compute_nearest_codes(data_sub, self.codebook[m])
-                self.pqcode[:, m, 0] = sorted_codes[:, 0] # closest code
-                self.pqcode[:, m, 1] = sorted_codes[:, 1] # second closest code
-                self.weights[:, m] = sorted_dists[:, 1] / (sorted_dists[:, 0] + sorted_dists[:, 1]) # weight for the closest code
+                full_membership = self._compute_membership(data_sub, self.codebook[m])
+                sorted_codes = np.argsort(full_membership, axis=1)
+                self.pqcode[:, m, 0] = sorted_codes[:, -1]
+                self.pqcode[:, m, 1] = sorted_codes[:, -2]
+                self.membership[:, m, 0] = full_membership[range(full_membership.shape[0]), sorted_codes[:, -1]]
+                self.membership[:, m, 1] = full_membership[range(full_membership.shape[0]), sorted_codes[:, -2]]
 
     def add(self, data: np.ndarray, compute_energy: bool = False) -> None:
         """
@@ -325,7 +308,7 @@ class FuzzyPQ(PQ):
             raise ValueError("Data dimensions must match trained data"
                 " dimensions.")
 
-        self.pqcode, self.weights = self.compress(data)
+        self.pqcode, self.membership = self.compress(data)
 
         if self.part_alg:
             data = data[:, self._features_perm]
@@ -350,8 +333,8 @@ class FuzzyPQ(PQ):
         compressed : np.ndarray
             Compressed representation of the data.
 
-        weight : np.ndarray
-            Weights of the compressed representation.
+        membership : np.ndarray
+            Top-2 cluster memberships of the compressed representation.
         
         """
 
@@ -369,21 +352,23 @@ class FuzzyPQ(PQ):
             data = data[:, self._features_perm]
 
         codes = np.empty((data.shape[0], self.M, 2), self.code_inttype)
-        weights = np.empty((data.shape[0], self.M), np.float16)
+        membership = np.empty((data.shape[0], self.M, 2), np.float16)
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             
             if self.dim_reduction:
                 data_sub = self._pcas[m].transform(data_sub)
             
-            sorted_codes, sorted_dists = self._compute_nearest_codes(data_sub, self.codebook[m])
-            codes[:, m, 0] = sorted_codes[:, 0]
-            codes[:, m, 1] = sorted_codes[:, 1]
-            weights[:, m] = sorted_dists[:, 1] / (sorted_dists[:, 0] + sorted_dists[:, 1])
+            full_membership = self._compute_membership(data_sub, self.codebook[m])
+            sorted_codes = np.argsort(full_membership, axis=1)
+            codes[:, m, 0] = sorted_codes[:, -1]
+            codes[:, m, 1] = sorted_codes[:, -2]
+            membership[:, m, 0] = full_membership[range(membership.shape[0]), sorted_codes[:, -1]]
+            membership[:, m, 1] = full_membership[range(membership.shape[0]), sorted_codes[:, -2]]
         
-        return codes, weights
+        return codes, membership
     
-    def decompress(self, codes: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    def decompress(self, codes: np.ndarray, membership: np.ndarray) -> np.ndarray:
         """
         Decompress codes using the trained quantizer.
 
@@ -393,8 +378,8 @@ class FuzzyPQ(PQ):
         codes : np.ndarray
             Codes to decompress.
 
-        weights : np.ndarray
-            Weights of the compressed representation.
+        membership : np.ndarray
+            Top-2 cluster memberships of the compressed representation.
 
         Returns
         -------
@@ -415,12 +400,18 @@ class FuzzyPQ(PQ):
         for m in range(self.M):
             if self.dim_reduction:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
-                    self._pcas[m].inverse_transform(self.codebook[m][codes[:, m, 0]] * weights[:, m].reshape(-1, 1) + \
-                        self.codebook[m][codes[:, m, 1]] * (1 - weights[:, m].reshape(-1, 1)))
+                    self._pcas[m].inverse_transform(
+                        (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
+                        self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1)) / \
+                        ((membership[:, m, 0] + membership[:, m, 1]).reshape(-1, 1)))
             else:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
-                    self.codebook[m][codes[:, m, 0]] * weights[:, m].reshape(-1, 1) + \
-                    self.codebook[m][codes[:, m, 1]] * (1 - weights[:, m].reshape(-1, 1))
+                    (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
+                    self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1)) / \
+                    ((membership[:, m, 0] + membership[:, m, 1]).reshape(-1, 1))
+                # decompressed[:, self._chunk_start[m] : self._chunk_start[m + 1]] = \
+                #     np.sum(self.codebook[m][codes[:, m]] * membership[:, m].reshape(-1, 2, 1), axis=1) / \
+                #     membership[:, m].sum(axis=1, keepdims=True)
         
         if self.part_alg:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
@@ -486,36 +477,22 @@ class FuzzyPQ(PQ):
         if self.part_alg:
             query = query[self._features_perm]
 
-        # dist = np.zeros(num_vectors_to_search, dtype=np.float32)
-        # for m in range(self.M):
-        #     average_centroid = (
-        #         (self.codebook[m][self.pqcode[subset, m][:, 0]] * self.pqcodeweights[subset, m][:, np.newaxis] +
-        #         self.codebook[m][self.pqcode[subset, m][:, 1]] * (1 - self.pqcodeweights[subset, m][:, np.newaxis])))
-
-        #     query_sub = query[self._chunk_start[m]:self._chunk_start[m + 1]]
-        #     if self.dim_reduction:
-        #         query_sub = self._pcas[m].transform([query_sub]).reshape(-1)
-        #     dist += np.sum((query_sub - average_centroid) ** 2, axis=1)
-
-        # Precompute query distances to centroids for each subspace
-        query_dists = np.zeros((self.M, self.K), dtype=np.float32)
+        dist_table = np.zeros((self.M, self.K), dtype=np.float32)
         for m in range(self.M):
             query_sub = query[self._chunk_start[m] : self._chunk_start[m+1]]
             if self.dim_reduction:
                 query_sub = self._pcas[m].transform([query_sub]).reshape(-1)
-            query_dists[m, :] = cdist([query_sub], self.codebook[m], 'sqeuclidean')[0]
+            dist_table[m, :] = cdist([query_sub], self.codebook[m], 'sqeuclidean')[0]
 
-        # Compute distances using weighted centroid combinations
         dist = np.zeros(num_vectors_to_search, dtype=np.float32)
-        for m in range(self.M):
-            codes_closest = self.pqcode[subset, m, 0]
-            codes_second = self.pqcode[subset, m, 1]
-            weights_closest = self.weights[subset, m]
-
-            dist_closest = query_dists[m, codes_closest]
-            dist_second = query_dists[m, codes_second]
-
-            dist += dist_closest * weights_closest + dist_second * (1 - weights_closest)
+        # for m in range(self.M):
+        #     dist += (dist_table[m, self.pqcode[subset, m, 0]] * self.membership[subset, m, 0] + \
+        #         dist_table[m, self.pqcode[subset, m, 1]] * self.membership[subset, m, 1]) / \
+        #         (self.membership[subset, m, 0] + self.membership[subset, m, 1]) 
+        dist = np.sum(
+            (dist_table[range(self.M), self.pqcode[subset, :, 0]] * self.membership[subset, :, 0] +
+            dist_table[range(self.M), self.pqcode[subset, :, 1]] * self.membership[subset, :, 1]) /
+            (self.membership[subset, :, 0] + self.membership[subset, :, 1]), axis=1)
         
         if sort:
             return dist, np.argsort(dist)
