@@ -1,6 +1,7 @@
 import numpy as np
+from skfda import FDataGrid
 from pyclustering.cluster.center_initializer import kmeans_plusplus_initializer
-from pyclustering.cluster.fcm import fcm
+from skfda.ml.clustering import FuzzyCMeans
 from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
 from search_approaches import PQ
@@ -57,9 +58,19 @@ class FuzzyPQ(PQ):
     Quantized representation of the data added to the database (codes of the two
     clusters with highest membership).
     """
+    fuzzifier: float
+    """
+    Hyper-parameter that controls how fuzzy the cluster will be.
+    """
     membership: np.ndarray
     """
     Top-2 cluster memberships of the data added to the database.
+    """
+    inertia: np.ndarray
+    """
+    Inertia of the Fuzzy KMeans clustering in each subspace (sum of squared
+    distances of samples to their closest cluster center, weighted by the sample
+    weights if provided).
     """
     features_labels: np.ndarray
     """
@@ -75,7 +86,7 @@ class FuzzyPQ(PQ):
     """
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
-        m: float = 2, seed: int = None, orth_transf: bool = False,
+        fuzzifier: float = 2, seed: int = None, orth_transf: bool = False,
         part_alg: str = None, dim_reduction: bool = False):
         """
         Constructor.
@@ -92,7 +103,7 @@ class FuzzyPQ(PQ):
         kmeans_iter : int, default=300
             Maximum number of iterations for Fuzzy KMeans.
 
-        m : float, default=2
+        fuzzifier : float, default=2
             Hyper-parameter that controls how fuzzy the cluster will be.
             The higher it is, the fuzzier the cluster will be in the end.
             This parameter should be greater than 1.
@@ -119,55 +130,8 @@ class FuzzyPQ(PQ):
         super().__init__(M=M, K=K, kmeans_iter=kmeans_iter, seed=seed,
             orth_transf=orth_transf, part_alg=part_alg,
             dim_reduction=dim_reduction)
-        self.m = m
+        self.fuzzifier = fuzzifier
         self.membership = None
-    
-    # def _compute_nearest_codes(self, data: np.ndarray,
-    #     codebook: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    #     """
-    #     Compute the distances to two closest codes for each vector in the data.
-
-    #     Parameters
-    #     ----------
-
-    #     data : np.ndarray
-    #         Data to compute the distances to the closest codes.
-
-    #     codebook : np.ndarray
-    #         Codebook.
-
-    #     Returns
-    #     -------
-
-    #     sorted_codes : np.ndarray
-    #         Codes of the two nearest centroids, sorted by distance.
-        
-    #     sorted_distances : np.ndarray
-    #         Distances to the two nearest centroids, sorted.
-
-    #     """
-        
-    #     distances = cdist(data, codebook)
-    #     sorted_codes = np.argsort(distances, axis=1)
-    #     sorted_distances = np.take_along_axis(distances, sorted_codes, axis=1)
-    #     return sorted_codes[:, :2], sorted_distances[:, :2]
-    
-    def _compute_membership(self, data, centers): # TODO: add doc
-        membership = np.zeros((len(data), len(centers)))
-
-        data_difference = np.zeros((len(centers), len(data)))
-        for i in range(len(centers)):
-            data_difference[i] = np.sum(np.square(data - centers[i]), axis=1)
-
-        for i in range(len(data)):
-            for j in range(len(centers)):
-                divider = sum([pow(data_difference[j][i] / data_difference[k][i], self.m) for k in range(len(centers)) if data_difference[k][i] != 0.0])
-                if divider != 0.0:
-                    membership[i][j] = 1.0 / divider
-                else:
-                    membership[i][j] = 1.0
-
-        return membership
 
     def train(self, data: np.ndarray, add: bool = True,
         compute_energy: bool = False, features_labels: np.ndarray = None,
@@ -221,6 +185,8 @@ class FuzzyPQ(PQ):
         self.codebook = []
         self.pqcode = None
         self.membership = None
+        self._fcms = []
+        self.inertia = np.empty((self.M))
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M, 2), self.code_inttype)
@@ -245,36 +211,46 @@ class FuzzyPQ(PQ):
 
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
-            
+
             if num_dims:
                 pca = PCA(n_components=num_dims).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
                 initial_centers = kmeans_plusplus_initializer(data_sub_red,
                     self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
                     ).initialize()
-                fcm_inst = fcm(data_sub_red, initial_centers, m=self.m,
-                    itermax=self.kmeans_iter, ccore=False)
-                fcm_inst.process()
+                initial_centers = FDataGrid(initial_centers)
+                fcm = FuzzyCMeans(n_clusters=self.K, init=initial_centers,
+                    fuzzifier=self.fuzzifier, n_init=1, random_state=self.seed,
+                    max_iter=self.kmeans_iter)
+                fcm = fcm.fit(FDataGrid(data_sub_red))
+                cluster_centers = fcm.cluster_centers_.data_matrix.reshape(-1, pca.n_components_)
                 if self.dim_reduction:
                     self._pcas.append(pca)
-                    self.codebook.append(fcm_inst.get_centers())
+                    self.codebook.append(cluster_centers)
                 else:
-                    cluster_centers = pca.inverse_transform(fcm_inst.get_centers())
+                    cluster_centers = pca.inverse_transform(cluster_centers)
                     self.codebook.append(cluster_centers)
             else:
                 initial_centers = kmeans_plusplus_initializer(data_sub,
                     self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
                     ).initialize()
-                fcm_inst = fcm(data_sub, initial_centers, m=self.m,
-                    itermax=self.kmeans_iter, ccore=False)
-                fcm_inst.process()
-                self.codebook.append(fcm_inst.get_centers())
+                initial_centers = FDataGrid(initial_centers)
+                fcm = FuzzyCMeans(n_clusters=self.K, init=initial_centers,
+                    fuzzifier=self.fuzzifier, n_init=1, random_state=self.seed,
+                    max_iter=self.kmeans_iter)
+                fcm = fcm.fit(FDataGrid(data_sub))
+                cluster_centers = fcm.cluster_centers_.data_matrix.reshape(-1, data_sub.shape[1])
+                self.codebook.append(cluster_centers)
+
+            self.inertia[m] = fcm.inertia_
+            self._fcms.append(fcm)
 
             if verbose:
-                print(f"Subspace {m+1} trained.")
+                print(f"KMeans on subspace {m+1} converged in {fcm.n_iter_}"
+                    f" iterations with an inertia of {fcm.inertia_}.")
             
             if add:
-                full_membership = self._compute_membership(data_sub, self.codebook[m])
+                full_membership = fcm.predict_proba(FDataGrid(data_sub))
                 sorted_codes = np.argsort(full_membership, axis=1)
                 self.pqcode[:, m, 0] = sorted_codes[:, -1]
                 self.pqcode[:, m, 1] = sorted_codes[:, -2]
@@ -359,7 +335,7 @@ class FuzzyPQ(PQ):
             if self.dim_reduction:
                 data_sub = self._pcas[m].transform(data_sub)
             
-            full_membership = self._compute_membership(data_sub, self.codebook[m])
+            full_membership = self._fcms[m].predict_proba(FDataGrid(data_sub))
             sorted_codes = np.argsort(full_membership, axis=1)
             codes[:, m, 0] = sorted_codes[:, -1]
             codes[:, m, 1] = sorted_codes[:, -2]
