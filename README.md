@@ -31,19 +31,20 @@ python create_glove_dataset.py
 The project's directory structure includes the following main files and folders:
 
 ```
-IR-proj # TODO:
-  │── docs # folder storing the html documentation
-  |── glove # folder storing the glove dataset
-  |── img # folder storing images of the experiments
-  |── sift # folder storing the sift dataset
-  |── siftsmall # folder storing the siftsmall dataset
-  |── create_glove_dataset.py # generates the glove dataset
-  |── faiss_comparison.ipynb # compares the performance of the faiss library with the implemented method
+IR-proj # TODO: re-check
+  │── docs                          # folder storing the html documentation
+  |── glove                         # folder storing the glove dataset
+  |── img                           # folder storing images of the experiments
+  |── sift                          # folder storing the sift dataset
+  |── siftsmall                     # folder storing the siftsmall dataset
+  |── create_glove_dataset.py       # generates the glove dataset
+  |── faiss_comparison.ipynb        # compares the performance of the faiss library with the implemented method
+  |── fuzzyPQ_experiments.ipynb     # experiments with the fuzzy product quantization
   |── large_scale_experiments.ipynb # large scale experiments
-  |── results_comparison.md # comparison of the results obtained in the original article
-  |── search_approaches.py # implementation of the search approaches
+  |── results_comparison.md         # comparison of the results obtained in the original article
+  |── search_approaches.py          # implementation of the search approaches
   |── small_scale_experiments.ipynb # small scale experiments
-  └── utils.py # implementation of utility functions
+  └── utils.py                      # implementation of utility functions
 ```
 
 ## References

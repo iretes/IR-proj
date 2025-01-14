@@ -20,7 +20,7 @@ def load_sift(name="siftsmall", dir="siftsmall"):
 
     return xb, xq, xt, gt
 
-def NDCG(ranking, exact_ranking): # TODO: utile?
+def NDCG(ranking, exact_ranking): # TODO: remove?
     """Compute the Normalized Discounted Cumulative Gain."""
     dcg = 0
     idcg = 0
@@ -35,7 +35,7 @@ def recall_at_r(ranking, exact_ranking, r):
     """Compute the Recall@R."""
     return len(set(ranking[:r]) & set(exact_ranking[:r])) / r
 
-def AP_at_r(ranking, exact_ranking, r): # TODO: utile?
+def AP_at_r(ranking, exact_ranking, r): # TODO: remove?
     """Compute the Average Precision@R."""
     ap = 0
     num_rel = 0
