@@ -997,7 +997,7 @@ class FuzzyPQ(PQ):
         self.inertia = np.empty((self.M))
         
         if add:
-            self.pqcode = np.empty((data.shape[0], self.M, 2), self.code_inttype)
+            self.pqcode = np.empty((data.shape[0], 2, self.M), self.code_inttype)
             self.membership_ratio = np.empty((data.shape[0], self.M), np.float16)
         
         if self.orth_transf:
@@ -1060,8 +1060,8 @@ class FuzzyPQ(PQ):
             if add:
                 full_membership = fcm.predict_proba(FDataGrid(data_sub))
                 sorted_codes = np.argsort(full_membership, axis=1)
-                self.pqcode[:, m, 0] = sorted_codes[:, -1]
-                self.pqcode[:, m, 1] = sorted_codes[:, -2]
+                self.pqcode[:, 0, m] = sorted_codes[:, -1]
+                self.pqcode[:, 1, m] = sorted_codes[:, -2]
                 membership1 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -1]]
                 membership2 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -2]]
                 self.membership_ratio[:, m] = membership2 / membership1
@@ -1136,7 +1136,7 @@ class FuzzyPQ(PQ):
         if self.part_alg:
             data = data[:, self._features_perm]
 
-        codes = np.empty((data.shape[0], self.M, 2), self.code_inttype)
+        codes = np.empty((data.shape[0], 2, self.M), self.code_inttype)
         membership_ratio = np.empty((data.shape[0], self.M), np.float16)
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
@@ -1146,8 +1146,8 @@ class FuzzyPQ(PQ):
             
             full_membership = self._fcms[m].predict_proba(FDataGrid(data_sub))
             sorted_codes = np.argsort(full_membership, axis=1)
-            codes[:, m, 0] = sorted_codes[:, -1]
-            codes[:, m, 1] = sorted_codes[:, -2]
+            codes[:, 0, m] = sorted_codes[:, -1]
+            codes[:, 1, m] = sorted_codes[:, -2]
             membership1 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -1]]
             membership2 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -2]]
             membership_ratio[:, m] = membership2 / membership1
@@ -1179,24 +1179,24 @@ class FuzzyPQ(PQ):
         if self.codebook is None:
             raise ValueError("The quantizer must be trained before"
                 " decompressing.")
-        if codes.shape[1] != self.M:
+        if codes.shape[2] != self.M:
             raise ValueError("Data dimensions must match trained data"
                 " dimensions.")
 
         decompressed = np.empty((codes.shape[0], self.D), np.float32)
         for m in range(self.M):
-            membership = np.empty((codes.shape[0], self.M, 2), np.float16)
-            membership[:, m, 0] = 1 / (1 + membership_ratio[:, m])
-            membership[:, m, 1] = membership_ratio[:, m] / (1 + membership_ratio[:, m])
+            membership = np.empty((codes.shape[0], 2, self.M), np.float16)
+            membership[:, 0, m] = 1 / (1 + membership_ratio[:, m])
+            membership[:, 1, m] = membership_ratio[:, m] / (1 + membership_ratio[:, m])
             if self.dim_reduction:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
                     self._pcas[m].inverse_transform(
-                        (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
-                        self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1)))
+                        (self.codebook[m][codes[:, 0, m]] * membership[:, 0, m].reshape(-1, 1) + \
+                        self.codebook[m][codes[:, 1, m]] * membership[:, 1, m].reshape(-1, 1)))
             else:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
-                    (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
-                    self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1))
+                    (self.codebook[m][codes[:, 0, m]] * membership[:, 0, m].reshape(-1, 1) + \
+                    self.codebook[m][codes[:, 1, m]] * membership[:, 1, m].reshape(-1, 1))
         
         if self.part_alg:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
@@ -1270,12 +1270,12 @@ class FuzzyPQ(PQ):
             dist_table[m, :] = cdist([query_sub], self.codebook[m], 'sqeuclidean')[0]
 
         dist = np.zeros(n, dtype=np.float32)
-        membership = np.zeros((n, self.M, 2), dtype=np.float16)
-        membership[range(n), :, 0] = 1 / (1 + self.membership_ratio[subset])
-        membership[range(n), :, 1] = self.membership_ratio[subset] / (1 + self.membership_ratio[subset])
+        membership = np.zeros((n, 2, self.M), dtype=np.float16)
+        membership[range(n), 0, :] = 1 / (1 + self.membership_ratio[subset])
+        membership[range(n), 1, :] = self.membership_ratio[subset] / (1 + self.membership_ratio[subset])
         dist = np.sum(
-            (dist_table[range(self.M), self.pqcode[subset, :, 0]] * membership[subset, :, 0] +
-            dist_table[range(self.M), self.pqcode[subset, :, 1]] * membership[subset, :, 1]), axis=1)
+            (dist_table[range(self.M), self.pqcode[subset, 0, :]] * membership[subset, 0, :] +
+            dist_table[range(self.M), self.pqcode[subset, 1, :]] * membership[subset, 1, :]), axis=1)
         
         if sort:
             return dist, np.argsort(dist)
