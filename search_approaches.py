@@ -313,7 +313,7 @@ class PQ:
     def train(self, data: np.ndarray, add: bool = True,
         compute_distortions: bool = False, compute_energy: bool = False,
         features_labels: np.ndarray = None, num_dims: int = None,
-        weight_samples: bool = False, neighbor: int = 3,
+        whiten: bool = False, weight_samples: bool = False, neighbor: int = 3,
         inverse_weights: bool = True, weight_method: str = "normal", 
         verbose: bool = False) -> None:
         """
@@ -345,6 +345,9 @@ class PQ:
             reduction. If `self.dim_reduction` is False, but `num_dims` is
             provided, centroids are computed in the reduced space and then
             transformed back to the original space.
+
+        whiten : bool, default=False
+            If True, apply whitening to the PCA transformation.
 
         weight_samples : bool, default=False
             Weight samples while training KMeans based on the distance to
@@ -435,7 +438,7 @@ class PQ:
                 random_state=self.seed, max_iter=self.kmeans_iter)
             
             if num_dims:
-                pca = PCA(n_components=num_dims).fit(data_sub)
+                pca = PCA(n_components=num_dims, whiten=whiten).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
                 km = km.fit(data_sub_red, sample_weight=sample_weight)
                 if self.dim_reduction:
