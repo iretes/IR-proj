@@ -946,7 +946,8 @@ class FuzzyPQ(PQ):
 
     def train(self, data: np.ndarray, add: bool = True,
         compute_energy: bool = False, features_labels: np.ndarray = None,
-        num_dims: int = None, verbose: bool = False) -> None:
+        num_dims: int = None, whiten: bool = False,
+        verbose: bool = False) -> None:
         """
         Train the quantizer on the given data.
         
@@ -972,6 +973,9 @@ class FuzzyPQ(PQ):
             reduction. If `self.dim_reduction` is False, but `num_dims` is
             provided, centroids are computed in the reduced space and then
             transformed back to the original space.
+
+        whiten : bool, default=False
+            If True, apply whitening to the PCA transformation.
 
         verbose : bool, default=False
             Print training information.
@@ -1024,7 +1028,7 @@ class FuzzyPQ(PQ):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
 
             if num_dims:
-                pca = PCA(n_components=num_dims).fit(data_sub)
+                pca = PCA(n_components=num_dims, whiten=whiten).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
                 initial_centers = kmeans_plusplus_initializer(data_sub_red,
                     self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
@@ -1274,8 +1278,8 @@ class FuzzyPQ(PQ):
 
         dist = np.zeros(n, dtype=np.float32)
         membership = np.zeros((n, 2, self.M), dtype=np.float16)
-        membership[range(n), 0, :] = 1 / (1 + self.membership_ratio[subset])
-        membership[range(n), 1, :] = self.membership_ratio[subset] / (1 + self.membership_ratio[subset])
+        membership[range(n), 0, :] = 1 / (1 + self.membership_ratio)
+        membership[range(n), 1, :] = self.membership_ratio / (1 + self.membership_ratio)
         dist = np.sum(
             (dist_table[range(self.M), self.pqcode[subset, 0, :]] * membership[subset, 0, :] +
             dist_table[range(self.M), self.pqcode[subset, 1, :]] * membership[subset, 1, :]), axis=1)
