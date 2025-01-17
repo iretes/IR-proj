@@ -1,8 +1,11 @@
+import csv
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import plotly.graph_objects as go
 import plotly.offline as pyo
+
+# TODO: add docs
 
 def ivecs_read(fname):
     a = np.fromfile(fname, dtype='int32')
@@ -12,13 +15,60 @@ def ivecs_read(fname):
 def fvecs_read(fname):
     return ivecs_read(fname).view('float32')
 
-def load_sift(name="siftsmall", dir="siftsmall"):
+def load_descriptors(name, dir):
     xt = fvecs_read(f"{dir}/{name}_learn.fvecs")
     xb = fvecs_read(f"{dir}/{name}_base.fvecs")
     xq = fvecs_read(f"{dir}/{name}_query.fvecs")
     gt = ivecs_read(f"{dir}/{name}_groundtruth.ivecs")
 
     return xb, xq, xt, gt
+
+def load_data(dataset_name, dataset_dir, search_train_subset=False, random_seed=None):
+    """
+    Load the data for the specified dataset.
+    """
+    gt = None
+    rng = np.random.default_rng(random_seed)
+    if dataset_name in ["siftsmall", "sift", "gist"]:
+        search_data, queries, tr_data, gt = load_descriptors(name=dataset_name,
+            dir=dataset_dir)
+        if search_train_subset:
+            search_data = tr_data[rng.choice(tr_data.shape[0], 10000, replace=False)]
+        if dataset_name == "gist":
+            # subsample data
+            search_data = search_data[rng.choice(search_data.shape[0], 10000, replace=False)]
+            queries = queries[rng.choice(queries.shape[0], 100, replace=False)]
+            tr_data = tr_data[rng.choice(tr_data.shape[0], 25000, replace=False)]
+    elif dataset_name == "glove":
+        data = pd.read_table(f"{dataset_dir}/glove.6B.300d.txt", sep=" ",
+            index_col=0, header=None, quoting=csv.QUOTE_NONE)
+        # exclusding missing values, non-alphanumeric characters and punctuation
+        data = data[data.index.notna()]
+        data = data[~data.index.str.contains(r'[^\w\s]', regex=True)]
+        # subsample data
+        tr_data = data.sample(n=25000, random_state=random_seed, replace=False)
+        remaining_data = data.drop(tr_data.index)
+        queries = remaining_data.sample(n=1000, random_state=random_seed, replace=False)
+        remaining_data = remaining_data.drop(queries.index)
+        if search_train_subset:
+            search_data = tr_data.sample(n=10000, random_state=random_seed, replace=False)
+            search_data = search_data.to_numpy()
+        else:
+            search_data = remaining_data.sample(n=10000, random_state=random_seed, replace=False)
+        tr_data = tr_data.to_numpy()
+        search_data = search_data.to_numpy()
+        queries = queries.to_numpy()
+        # normalize data to unit vectors
+        for i in range(tr_data.shape[0]):
+            tr_data[i] = tr_data[i] / np.linalg.norm(tr_data[i])
+        for i in range(search_data.shape[0]):
+            search_data[i] = search_data[i] / np.linalg.norm(search_data[i])
+        for i in range(queries.shape[0]):
+            queries[i] = queries[i] / np.linalg.norm(queries[i])
+    else:
+        raise ValueError("Invalid dataset name. Choose from 'siftsmall', 'sift', 'gist' or 'glove'.")
+
+    return tr_data, search_data, queries, gt
 
 def NDCG(ranking, exact_ranking): # TODO: remove?
     """Compute the Normalized Discounted Cumulative Gain."""

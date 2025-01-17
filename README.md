@@ -32,12 +32,12 @@ The project's directory structure includes the following main files and folders:
 
 ```
 IR-proj # TODO: re-check
-  │── docs                          # folder storing the html documentation
-  |── glove                         # folder storing the glove dataset
-  |── img                           # folder storing images of the experiments
-  |── sift                          # folder storing the sift dataset
-  |── siftsmall                     # folder storing the siftsmall dataset
-  |── create_glove_dataset.py       # generates the glove dataset
+  │── docs                          # stores the html documentation
+  |── gist                          # stores the gist dataset
+  |── glove                         # stores the glove dataset
+  |── img                           # stores images of the experiments
+  |── sift                          # stores the sift dataset
+  |── siftsmall                     # stores the siftsmall dataset
   |── faiss_comparison.ipynb        # compares the performance of the faiss library with the implemented method
   |── fuzzyPQ_experiments.ipynb     # experiments with the fuzzy product quantization
   |── large_scale_experiments.ipynb # large scale experiments
