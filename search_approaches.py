@@ -955,7 +955,7 @@ class FuzzyPQ(PQ):
         self.inertia = np.empty((self.M))
         
         if add:
-            self.pqcode = np.empty((data.shape[0], 2, self.M), self.code_inttype)
+            self.pqcode = np.empty((data.shape[0], self.M, 2), self.code_inttype)
             self.membership_ratio = np.empty((data.shape[0], self.M), np.float16)
         
         if self.orth_transf:
@@ -1018,8 +1018,8 @@ class FuzzyPQ(PQ):
             if add:
                 full_membership = fcm.predict_proba(FDataGrid(data_sub))
                 sorted_codes = np.argsort(full_membership, axis=1)
-                self.pqcode[:, 0, m] = sorted_codes[:, -1]
-                self.pqcode[:, 1, m] = sorted_codes[:, -2]
+                self.pqcode[:, m, 0] = sorted_codes[:, -1]
+                self.pqcode[:, m, 1] = sorted_codes[:, -2]
                 membership1 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -1]]
                 membership2 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -2]]
                 self.membership_ratio[:, m] = membership2 / membership1
@@ -1094,7 +1094,7 @@ class FuzzyPQ(PQ):
         if self.features_labels is not None:
             data = data[:, self._features_perm]
 
-        codes = np.empty((data.shape[0], 2, self.M), self.code_inttype)
+        codes = np.empty((data.shape[0], self.M, 2), self.code_inttype)
         membership_ratio = np.empty((data.shape[0], self.M), np.float16)
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
@@ -1104,8 +1104,8 @@ class FuzzyPQ(PQ):
             
             full_membership = self._fcms[m].predict_proba(FDataGrid(data_sub))
             sorted_codes = np.argsort(full_membership, axis=1)
-            codes[:, 0, m] = sorted_codes[:, -1]
-            codes[:, 1, m] = sorted_codes[:, -2]
+            codes[:, m, 0] = sorted_codes[:, -1]
+            codes[:, m, 1] = sorted_codes[:, -2]
             membership1 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -1]]
             membership2 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -2]]
             membership_ratio[:, m] = membership2 / membership1
@@ -1137,24 +1137,24 @@ class FuzzyPQ(PQ):
         if self.codebook is None:
             raise ValueError("The quantizer must be trained before"
                 " decompressing.")
-        if codes.shape[2] != self.M:
+        if codes.shape[1] != self.M:
             raise ValueError("Data dimensions must match trained data"
                 " dimensions.")
 
         decompressed = np.empty((codes.shape[0], self.D), np.float32)
         for m in range(self.M):
-            membership = np.empty((codes.shape[0], 2, self.M), np.float16)
-            membership[:, 0, m] = 1 / (1 + membership_ratio[:, m])
-            membership[:, 1, m] = membership_ratio[:, m] / (1 + membership_ratio[:, m])
+            membership = np.empty((codes.shape[0], self.M, 2), np.float16)
+            membership[:, m, 0] = 1 / (1 + membership_ratio[:, m])
+            membership[:, m, 1] = membership_ratio[:, m] / (1 + membership_ratio[:, m])
             if self.dim_reduction:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
                     self._pcas[m].inverse_transform(
-                        (self.codebook[m][codes[:, 0, m]] * membership[:, 0, m].reshape(-1, 1) + \
-                        self.codebook[m][codes[:, 1, m]] * membership[:, 1, m].reshape(-1, 1)))
+                        (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
+                        self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1)))
             else:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
-                    (self.codebook[m][codes[:, 0, m]] * membership[:, 0, m].reshape(-1, 1) + \
-                    self.codebook[m][codes[:, 1, m]] * membership[:, 1, m].reshape(-1, 1))
+                    (self.codebook[m][codes[:, m, 0]] * membership[:, m, 0].reshape(-1, 1) + \
+                    self.codebook[m][codes[:, m, 1]] * membership[:, m, 1].reshape(-1, 1))
         
         if self.features_labels is not None:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
@@ -1226,15 +1226,18 @@ class FuzzyPQ(PQ):
             if self.dim_reduction:
                 query_sub = self._pcas[m].transform([query_sub]).reshape(-1)
             dist_table[m, :] = cdist([query_sub], self.codebook[m], 'sqeuclidean')[0]
-
-        dist = np.zeros(n, dtype=np.float32)
-        membership = np.zeros((n, 2, self.M), dtype=np.float16)
-        membership[range(n), 0, :] = 1 / (1 + self.membership_ratio)
-        membership[range(n), 1, :] = self.membership_ratio / (1 + self.membership_ratio)
-        dist = np.sum(
-            (dist_table[range(self.M), self.pqcode[subset, 0, :]] * membership[subset, 0, :] +
-            dist_table[range(self.M), self.pqcode[subset, 1, :]] * membership[subset, 1, :]), axis=1)
         
+        dist = np.zeros(n, dtype=np.float32)
+        membership = np.zeros((n, self.M, 2), dtype=np.float16)
+        membership_ratio_subset = self.membership_ratio[subset]
+        membership[:, :, 0] = 1 / (1 + membership_ratio_subset)
+        membership[:, :, 1] = membership_ratio_subset / (1 + membership_ratio_subset)
+        for m in range(self.M):
+            dist += (
+                dist_table[m, self.pqcode[subset, m, 0]] * membership[:, m, 0] +
+                dist_table[m, self.pqcode[subset, m, 1]] * membership[:, m, 1]
+            )
+
         if sort:
             return dist, np.argsort(dist)
         return dist, None
@@ -1293,8 +1296,8 @@ class IVF:
     def __init__(self, Kp: int = 1024, M: int = 8, K: int = 256,
         kmeans_iter: int = 300, kmeans_minit: str = "k-means++",
         seed: int = None, orth_transf: bool = False,
-        dim_reduction: bool = False, coarse_clust_alg: str = "km",
-        batch_size: int = 1024):
+        dim_reduction: bool = False, shrink_threshold: float = None,
+        coarse_clust_alg: str = "km", batch_size: int = 1024):
         """
         Constructor.
 
@@ -1327,6 +1330,9 @@ class IVF:
             Apply PCA transformation to reduce dimensionality of each subspace
             in the PQ quantizer.
 
+        shrink_threshold : float, default=None
+            Threshold for shrinking centroids to remove features.
+
         coarse_clust_alg : str, default='km'
             The clustering algorithm to use for the coarse quantizer.
             * 'km': KMenas clustering.
@@ -1358,14 +1364,15 @@ class IVF:
         self.centroids = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
             kmeans_minit=self.kmeans_minit, seed=seed, orth_transf=orth_transf,
-            dim_reduction=dim_reduction)
+            dim_reduction=dim_reduction, shrink_threshold=shrink_threshold)
         self.inertia = None
-
+    
     def train(self, data: np.ndarray, add: bool = True,
-        compute_distortions: bool = False, weight_samples: bool = False,
-        neighbor: int = 3, inverse_weights: bool = True,
-        weight_method: str = "normal", num_dims: int = None,
-        features_labels: np.ndarray = None, verbose: bool = False) -> None:
+        compute_distortions: bool = False, compute_energy: bool = False,
+        features_labels: np.ndarray = None, num_dims: int = None,
+        whiten: bool = False, weight_samples: bool = False, neighbor: int = 3,
+        inverse_weights: bool = True, weight_method: str = "normal",
+        verbose: bool = False) -> None:
         """
         Train the IVF on the given data.
 
@@ -1381,6 +1388,23 @@ class IVF:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             (if `add` is also True) for the PQ quantizer.
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
+
+        features_labels : np.ndarray, default=None
+            Features labels for custom partitioning of the features into
+            subspaces in the PQ quantizer.
+
+        num_dims : int, default=None
+            Number of dimensions in each subspace after PCA dimensionality
+            reduction for the PQ quantizer. If `self.dim_reduction` is False,
+            but `num_dims` is provided, centroids are computed in the reduced
+            space and then transformed back to the original space.
+
+        whiten : bool, default=False
+            If True, apply whitening to the PCA transformation.
 
         weight_samples : bool, default=False
             Weight samples while training KMeans based on the distance to
@@ -1400,16 +1424,6 @@ class IVF:
             * 'reciprocal': If `inverse_weights` is True, compute the reciprocal
                 of the distances and normalize to [0, 1], otherwise normalize
                 the distances to [0, 1].
-        
-        num_dims : int, default=None
-            Number of dimensions in each subspace after PCA dimensionality
-            reduction for the PQ quantizer. If `self.dim_reduction` is False,
-            but `num_dims` is provided, centroids are computed in the reduced
-            space and then transformed back to the original space.
-
-        features_labels : np.ndarray, default=None
-            Features labels for custom partitioning of the features into
-            subspaces in the PQ quantizer.
 
         verbose : bool, default=False
             Print training information.
@@ -1455,12 +1469,13 @@ class IVF:
         residuals = data - self.centroids[labels]
         self.pq.train(data=residuals, add=add,
             compute_distortions=compute_distortions,
-            features_labels=features_labels, num_dims=num_dims,
-            weight_samples=weight_samples, neighbor=neighbor,
-            inverse_weights=inverse_weights, weight_method=weight_method,
-            verbose=verbose)
+            compute_energy=compute_energy, features_labels=features_labels,
+            num_dims=num_dims, whiten=whiten, weight_samples=weight_samples,
+            neighbor=neighbor, inverse_weights=inverse_weights,
+            weight_method=weight_method, verbose=verbose)
 
-    def add(self, data: np.ndarray, compute_distortions:bool = False) -> None:
+    def add(self, data: np.ndarray, compute_distortions:bool = False,
+        compute_energy: bool = False) -> None:
         """
         Add data to the IVF structure.
 
@@ -1473,6 +1488,10 @@ class IVF:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             for the PQ quantizer.
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
         
         """
         
@@ -1487,7 +1506,8 @@ class IVF:
         self.num_els = data.shape[0]
         
         residuals = data - self.centroids[labels]
-        self.pq.add(data=residuals, compute_distortions=compute_distortions)
+        self.pq.add(data=residuals, compute_distortions=compute_distortions,
+            compute_energy=compute_energy)
 
     def search(self, query: np.ndarray, w: int = 8, asym: bool = True,
         correct: bool = False, sort: bool = True) \
@@ -1547,15 +1567,317 @@ class IVF:
         
         for i in range(w):
             query_res = query - self.centroids[sorted_centroids[i]]
-            curr_docs = self.ivf[sorted_centroids[i]]
-            if curr_docs.shape[0] == 0:
+            curr_items = self.ivf[sorted_centroids[i]]
+            if curr_items.shape[0] == 0:
                 continue
-            curr_dist, _ = self.pq.search(query_res, subset=curr_docs,
+            curr_dist, _ = self.pq.search(query_res, subset=curr_items,
                 asym=asym, correct=correct, sort=False)
-            num_prev_docs = np.sum(els_per_centroid[ : i])
-            num_curr_docs = els_per_centroid[i]
-            dists[num_prev_docs : num_prev_docs + num_curr_docs] = curr_dist
-            els[num_prev_docs : num_prev_docs + num_curr_docs] = curr_docs
+            num_prev_items = np.sum(els_per_centroid[ : i])
+            num_curr_items = els_per_centroid[i]
+            dists[num_prev_items : num_prev_items + num_curr_items] = curr_dist
+            els[num_prev_items : num_prev_items + num_curr_items] = curr_items
+
+        if sort:
+            sorted_idx = np.argsort(dists)
+            dists = dists[sorted_idx]
+            els = els[sorted_idx]
+        
+        return dists, els
+    
+class FuzzyIVF:
+    """
+    Inverted File (IVF) implementation with Fuzzy Product Quantization (PQ).
+
+    """
+
+    Kp: int
+    """
+    Number of centroids for the coarse quantizer.
+    """
+    kmeans_iter: int
+    """
+    Maximum number of iterations for KMeans.
+    """
+    kmeans_minit: str
+    """
+    Method for KMeans initialization.
+    """
+    seed: int
+    """
+    Random seed.
+    """
+    coarse_clust_alg: str
+    """
+    The clustering algorithm to use for the coarse quantizer.
+    """
+    batch_size: int
+    """
+    Batch size for MiniBatchKMeans clustering of the coarse quantizer.
+    """
+    ivf: list[np.ndarray]
+    """
+    Inverted index storing data indices assigned to each centroid.
+    """
+    num_els: int
+    """
+    Total number of vectors added to the index.
+    """
+    centroids: np.ndarray
+    """
+    Coarse quantizer cluster centroids.
+    """
+    pq: PQ
+    """
+    Product Quantizer instance for quantizing residuals.
+    """
+    inertia: float
+    """
+    Inertia of the KMeans clustering for the coarse quantizer.
+    """
+
+    def __init__(self, Kp: int = 1024, M: int = 8, K: int = 256,
+        kmeans_iter: int = 300, kmeans_minit: str = "k-means++",
+        fuzzifier: float = 2, seed: int = None, orth_transf: bool = False,
+        dim_reduction: bool = False, coarse_clust_alg: str = "km",
+        batch_size: int = 1024):
+        """
+        Constructor.
+
+        Parameters
+        ----------
+
+        Kp: int, default=1024
+            Number of centroids for the coarse quantizer.
+
+        M : int, default=8
+            Number of subspaces for the PQ quantizer.
+        
+        K : int, default=256
+            Number of clusters per subspace for the PQ quantizer.
+        
+        kmeans_iter : int, default=300
+            Maximum number of iterations for KMeans.
+        
+        kmeans_minit : str, default='k-means++'
+            Method for KMeans initialization.
+            See https://scikit-learn.org/1.5/modules/generated/sklearn.cluster.KMeans.html
+
+        fuzzifier : float, default=2
+            Hyper-parameter that controls how fuzzy the cluster will be.
+            The higher it is, the fuzzier the cluster will be in the end.
+            This parameter should be greater than 1.
+        
+        seed : int, default None
+            Random seed.
+        
+        orth_transf : bool, default=False
+            Apply orthogonal transformation to the data in the PQ quantizer.
+
+        dim_reduction : bool, default=False
+            Apply PCA transformation to reduce dimensionality of each subspace
+            in the PQ quantizer.
+
+        coarse_clust_alg : str, default='km'
+            The clustering algorithm to use for the coarse quantizer.
+            * 'km': KMenas clustering.
+            * 'mkm': MiniBatchKMeans clustering.
+            * 'bkm': BisectingKMeans clustering.
+
+        batch_size : int, default=1024
+            Batch size for MiniBatchKMeans clustering of the coarse quantizer.
+
+        """
+
+        if Kp <= 0:
+            raise ValueError("Kp must be greater than 0.")
+
+        self.Kp = Kp
+        self.kmeans_iter = kmeans_iter
+        self.kmeans_minit = kmeans_minit
+        self.seed = seed
+        if coarse_clust_alg not in ["km", "bkm", "mkm"]:
+            raise ValueError("Supported clustering algorithms for the coarse"
+                " quantizer are 'km', 'bkm', or 'mkm'.")
+        self.coarse_clust_alg = coarse_clust_alg
+        if batch_size <= 0:
+            raise ValueError("Batch size must be greater than 0.")
+        self.batch_size = batch_size
+        
+        self.ivf = None
+        self.num_els = 0
+        self.centroids = None
+        self.pq = FuzzyPQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
+            fuzzifier=fuzzifier, seed=seed, orth_transf=orth_transf,
+            dim_reduction=dim_reduction)
+        self.inertia = None
+    
+    def train(self, data: np.ndarray, add: bool = True,
+        compute_energy: bool = False, features_labels: np.ndarray = None,
+        num_dims: int = None, whiten: bool = False, verbose: bool = False) -> None:
+        """
+        Train the IVF on the given data.
+
+        Parameters
+        ----------
+
+        data : np.ndarray
+            Data to train the IVF.
+
+        add : bool, default=True
+            Add the data to the index.
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
+
+        features_labels : np.ndarray, default=None
+            Features labels for custom partitioning of the features into
+            subspaces in the PQ quantizer.
+
+        num_dims : int, default=None
+            Number of dimensions in each subspace after PCA dimensionality
+            reduction for the PQ quantizer. If `self.dim_reduction` is False,
+            but `num_dims` is provided, centroids are computed in the reduced
+            space and then transformed back to the original space.
+
+        whiten : bool, default=False
+            If True, apply whitening to the PCA transformation.
+
+        verbose : bool, default=False
+            Print training information.
+        
+        """
+        
+        if data.shape[0] <= self.Kp:
+            raise ValueError("Number of vectors must be greater than the number"
+                " of centroids.")
+        
+        self.num_els = 0
+        self.ivf = None
+
+        clust_alg_params = {
+            "n_clusters": self.Kp,
+            "init": self.kmeans_minit,
+            "n_init": 1,
+            "random_state": self.seed,
+            "max_iter": self.kmeans_iter
+        }
+        if self.coarse_clust_alg == "km":
+            clust_alg = KMeans
+        elif self.coarse_clust_alg == "mkm":
+            clust_alg = MiniBatchKMeans
+            clust_alg_params["batch_size"] = self.batch_size
+        else:
+            clust_alg = BisectingKMeans
+        
+        km = clust_alg(**clust_alg_params).fit(data)
+        self.inertia = km.inertia_
+        
+        if verbose:
+            print(f"Coarse clustering algorithm converged in {km.n_iter_}"
+                " iterations.")
+
+        self.centroids = km.cluster_centers_
+        labels, _ = vq(data, self.centroids)
+
+        if add:
+            self.ivf = [np.where(labels == i)[0] for i in range(self.Kp)]
+            self.num_els = data.shape[0]
+        
+        residuals = data - self.centroids[labels]
+        self.pq.train(data=residuals, add=add, compute_energy=compute_energy,
+            features_labels=features_labels, num_dims=num_dims, whiten=whiten,
+            verbose=verbose)
+
+    def add(self, data: np.ndarray, compute_energy: bool = False) -> None:
+        """
+        Add data to the IVF structure.
+
+        Parameters
+        ----------
+
+        data : np.ndarray
+            Data to add to the index.
+
+        compute_energy : bool, default=False
+            Compute the average energy (the sum of squared components) within
+            each subspace.
+        
+        """
+        
+        if self.centroids is None:
+            raise ValueError("The index must be created before adding data.")
+        if data.shape[1] != self.pq.D:
+            raise ValueError("Data dimensions must match trained data"
+                " dimensions.")
+
+        labels, _ = vq(data, self.centroids)
+        self.ivf = [np.where(labels == i)[0] for i in range(self.Kp)]
+        self.num_els = data.shape[0]
+        
+        residuals = data - self.centroids[labels]
+        self.pq.add(data=residuals, compute_energy=compute_energy)
+
+    def search(self, query: np.ndarray, w: int = 8, sort: bool = True) \
+        -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute the distances of the query to the database vectors.
+
+        Parameters
+        ----------
+
+        query : np.ndarray
+            Query vector.
+
+        w : int, default=8
+            Number of coarse centroids to visit.
+
+        sort : bool, default=True
+            Sort the distances returned.
+
+        Returns
+        -------
+
+        dists : np.ndarray
+            Distances of the query to the database vectors, sorted in increasing
+            order if `sort` is True.
+        
+        idx : np.ndarray
+            Indices of the database vectors sorted by distance in increasing
+            order, if `sort` is True.
+        
+        """
+
+        if w > self.Kp:
+            raise ValueError("Number of centroids to visit must be less or equal"
+                " to the number of centroids.")
+        if self.centroids is None:
+            raise ValueError("The index must be trained before searching.")
+        if self.ivf is None:
+            raise ValueError("Vectors must be added before searching.")
+        if len(query) != self.pq.D:
+            raise ValueError("Query dimensions must match trained data"
+                " dimensions.")
+
+        dist2centroids = cdist([query], self.centroids, 'sqeuclidean')[0]
+        sorted_centroids = np.argsort(dist2centroids)
+        els_per_centroid = np.array(
+            [len(self.ivf[centroid]) for centroid in sorted_centroids])
+        num_els = np.sum(els_per_centroid[ : w])
+        dists = np.empty(num_els, np.float32)
+        els = np.empty(num_els, np.int64)
+        
+        for i in range(w):
+            query_res = query - self.centroids[sorted_centroids[i]]
+            curr_items = self.ivf[sorted_centroids[i]]
+            if curr_items.shape[0] == 0:
+                continue
+            curr_dist, _ = self.pq.search(query_res, subset=curr_items,
+                sort=False)
+            num_prev_items = np.sum(els_per_centroid[ : i])
+            num_curr_items = els_per_centroid[i]
+            dists[num_prev_items : num_prev_items + num_curr_items] = curr_dist
+            els[num_prev_items : num_prev_items + num_curr_items] = curr_items
 
         if sort:
             sorted_idx = np.argsort(dists)
