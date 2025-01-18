@@ -1,8 +1,7 @@
 import numpy as np
 from scipy.cluster.vq import vq
 from sklearn.neighbors import NearestCentroid
-from sklearn.cluster import (KMeans, BisectingKMeans, MiniBatchKMeans,
-    SpectralBiclustering)
+from sklearn.cluster import (KMeans, BisectingKMeans, MiniBatchKMeans)
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
 from scipy.stats import ortho_group
@@ -41,10 +40,6 @@ class PQ:
     """
     Apply orthogonal transformation to the data.
     """
-    part_alg: str
-    """
-    Algorithm for partitioning the features into subspaces.
-    """
     dim_reduction: bool
     """
     Apply PCA transformation to reduce dimensionality of each subspace.
@@ -55,8 +50,7 @@ class PQ:
     """
     Ds: int
     """
-    Dimension of each subspace, when `self.part_alg` is None (equal
-    partitioning).
+    Dimension of each subspace when using equal partitioning.
     """
     D: int
     """
@@ -96,8 +90,8 @@ class PQ:
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         kmeans_minit: str = "k-means++", seed: int = None,
-        orth_transf: bool = False, part_alg: str = None,
-        dim_reduction: bool = False, shrink_threshold: float = None):
+        orth_transf: bool = False, dim_reduction: bool = False,
+        shrink_threshold: float = None):
         """
         Constructor.
 
@@ -122,14 +116,6 @@ class PQ:
         
         orth_transf : bool, default=False
             Apply orthogonal transformation to the data.
-        
-        part_alg : str, default=None
-            Algorithm for partitioning the features into subspaces.
-            * None: Equally partition the features into subspaces.
-            * 'custom': Custom partitioning, column labels must be provided to
-                the train method.
-            * 'sbc': Spectral Biclustering of the data.
-            * 'km': KMeans clustering of the columns.
 
         dim_reduction : bool, default=False
             Apply PCA transformation to reduce dimensionality of each subspace.
@@ -143,9 +129,6 @@ class PQ:
             raise ValueError("M must be greater than 0.")
         if K <= 0:
             raise ValueError("K must be greater than 0.")
-        if part_alg not in [None, "custom", "sbc", "km"]:
-            raise ValueError("Supported partitioning algorithms are 'custom',"
-                " 'sbc', or 'km'.")
         if shrink_threshold and shrink_threshold < 0:
             raise ValueError("Shrink threshold must be greater or equal to 0.")
 
@@ -155,7 +138,6 @@ class PQ:
         self.kmeans_minit = kmeans_minit
         self.seed = seed
         self.orth_transf = orth_transf
-        self.part_alg = part_alg
         self.dim_reduction = dim_reduction
         self.shrink_threshold = shrink_threshold
 
@@ -202,28 +184,17 @@ class PQ:
         
         """
         
-        if self.part_alg:
-            if self.part_alg == "custom":
-                self.features_labels = features_labels
-            elif self.part_alg == "sbc":
-                sbc = SpectralBiclustering(n_clusters=(self.K, self.M),
-                    n_init=1, random_state=self.seed)
-                sbc.fit(data)
-                self.features_labels = sbc.column_labels_
-            elif self.part_alg == "km":
-                km = KMeans(n_clusters=self.M, init=self.kmeans_minit,
-                    n_init=1, random_state=self.seed, max_iter=self.kmeans_iter)
-                km = km.fit(data.T)
-                self.features_labels = km.labels_
+        if features_labels is None:
+            self.features_cluster_sizes = np.full(self.M, self.Ds)
+            self._chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
+            self._features_perm = np.arange(data.shape[1])  # identity permutation
+        else:
+            self.features_labels = features_labels
             _, self.features_cluster_sizes = np.unique(self.features_labels,
                 return_counts=True)
             self._chunk_start = np.zeros(self.M+1, dtype=int)
             self._chunk_start[1:] = np.cumsum(self.features_cluster_sizes)
             self._features_perm = np.argsort(self.features_labels)
-        else:
-            self.features_cluster_sizes = np.full(self.M, self.Ds)
-            self._chunk_start = np.arange(0, self.M * self.Ds + self.Ds, self.Ds)
-            self._features_perm = np.arange(data.shape[1])  # identity permutation
 
     def _neighbor_distances_to_weights(self, distances: np.ndarray,
         inverse_weights: bool, weight_method: str) -> np.ndarray:
@@ -377,9 +348,6 @@ class PQ:
         if self.D % self.M != 0:
             raise ValueError("Feature dimension must be divisible by the number"
                 " of subspaces (M).")
-        if self.part_alg == "custom" and features_labels is None:
-            raise ValueError("Feature labels must be provided for custom"
-                " partitioning.")
         if features_labels is not None and features_labels.shape[0] != self.D:
             raise ValueError("Feature labels must have the same number of"
                 " features as the data.")
@@ -503,7 +471,7 @@ class PQ:
 
         self.pqcode = self.compress(data)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             data = data[:, self._features_perm]
 
         if compute_energy:
@@ -547,7 +515,7 @@ class PQ:
         if self.orth_transf:
             data = np.dot(data, self._O)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             data = data[:, self._features_perm]
 
         compressed = np.empty((data.shape[0], self.M), self.code_inttype)
@@ -593,7 +561,7 @@ class PQ:
                 decompressed[:, self._chunk_start[m] : self._chunk_start[m+1]] = \
                     self.codebook[m][codes[:, m]]
         
-        if self.part_alg:
+        if self.features_labels is not None:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
 
         if self.orth_transf:
@@ -660,7 +628,7 @@ class PQ:
         if self.orth_transf:
             query = np.dot(query, self._O)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             query = query[self._features_perm]
 
         dist_table = np.empty((self.M, self.K), np.float32)
@@ -842,18 +810,13 @@ class FuzzyPQ(PQ):
     """
     Apply orthogonal transformation to the data.
     """
-    part_alg: str
-    """
-    Algorithm for partitioning the features into subspaces.
-    """
     dim_reduction: bool
     """
     Apply PCA transformation to reduce dimensionality of each subspace.
     """
     Ds: int
     """
-    Dimension of each subspace, when `self.part_alg` is None (equal
-    partitioning).
+    Dimension of each subspace when using equal partitioning.
     """
     D: int
     """
@@ -898,7 +861,7 @@ class FuzzyPQ(PQ):
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         fuzzifier: float = 2, seed: int = None, orth_transf: bool = False,
-        part_alg: str = None, dim_reduction: bool = False):
+        dim_reduction: bool = False):
         """
         Constructor.
 
@@ -924,14 +887,6 @@ class FuzzyPQ(PQ):
         
         orth_transf : bool, default=False
             Apply orthogonal transformation to the data.
-        
-        part_alg : str, default=None
-            Algorithm for partitioning the features into subspaces.
-            * None: Equally partition the features into subspaces.
-            * 'custom': Custom partitioning, column labels must be provided to
-                the train method.
-            * 'sbc': Spectral Biclustering of the data.
-            * 'km': KMeans clustering of the columns.
 
         dim_reduction : bool, default=False
             Apply PCA transformation to reduce dimensionality of each subspace.
@@ -939,8 +894,7 @@ class FuzzyPQ(PQ):
         """
 
         super().__init__(M=M, K=K, kmeans_iter=kmeans_iter, seed=seed,
-            orth_transf=orth_transf, part_alg=part_alg,
-            dim_reduction=dim_reduction)
+            orth_transf=orth_transf, dim_reduction=dim_reduction)
         self.fuzzifier = fuzzifier
         self.membership_ratio = None
 
@@ -986,9 +940,6 @@ class FuzzyPQ(PQ):
         if self.D % self.M != 0:
             raise ValueError("Feature dimension must be divisible by the number"
                 " of subspaces (M).")
-        if self.part_alg == "custom" and features_labels is None:
-            raise ValueError("Feature labels must be provided for custom"
-                " partitioning.")
         if features_labels is not None and features_labels.shape[0] != self.D:
             raise ValueError("Feature labels must have the same number of"
                 " features as the data.")
@@ -1102,7 +1053,7 @@ class FuzzyPQ(PQ):
 
         self.pqcode, self.membership_ratio = self.compress(data)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             data = data[:, self._features_perm]
 
         if compute_energy:
@@ -1140,7 +1091,7 @@ class FuzzyPQ(PQ):
         if self.orth_transf:
             data = np.dot(data, self._O)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             data = data[:, self._features_perm]
 
         codes = np.empty((data.shape[0], 2, self.M), self.code_inttype)
@@ -1205,7 +1156,7 @@ class FuzzyPQ(PQ):
                     (self.codebook[m][codes[:, 0, m]] * membership[:, 0, m].reshape(-1, 1) + \
                     self.codebook[m][codes[:, 1, m]] * membership[:, 1, m].reshape(-1, 1))
         
-        if self.part_alg:
+        if self.features_labels is not None:
             decompressed = decompressed[:, np.argsort(self._features_perm)]
 
         if self.orth_transf:
@@ -1266,7 +1217,7 @@ class FuzzyPQ(PQ):
         if self.orth_transf:
             query = np.dot(query, self._O)
 
-        if self.part_alg:
+        if self.features_labels is not None:
             query = query[self._features_perm]
 
         dist_table = np.zeros((self.M, self.K), dtype=np.float32)
@@ -1341,7 +1292,7 @@ class IVF:
 
     def __init__(self, Kp: int = 1024, M: int = 8, K: int = 256,
         kmeans_iter: int = 300, kmeans_minit: str = "k-means++",
-        seed: int = None, orth_transf: bool = False, part_alg: str = None,
+        seed: int = None, orth_transf: bool = False,
         dim_reduction: bool = False, coarse_clust_alg: str = "km",
         batch_size: int = 1024):
         """
@@ -1371,15 +1322,6 @@ class IVF:
         
         orth_transf : bool, default=False
             Apply orthogonal transformation to the data in the PQ quantizer.
-        
-        part_alg : str, default=None
-            Algorithm for partitioning the features into subspaces in the PQ
-            quantizer:
-            * None: Equally partition the features into subspaces.
-            * 'custom': Custom partitioning, column labels must be provided to
-                the train method.
-            * 'sbc': Spectral Biclustering of the data.
-            * 'km': KMeans clustering of the columns.
 
         dim_reduction : bool, default=False
             Apply PCA transformation to reduce dimensionality of each subspace
@@ -1416,7 +1358,7 @@ class IVF:
         self.centroids = None
         self.pq = PQ(M=M, K=K, kmeans_iter=self.kmeans_iter,
             kmeans_minit=self.kmeans_minit, seed=seed, orth_transf=orth_transf,
-            part_alg=part_alg, dim_reduction=dim_reduction)
+            dim_reduction=dim_reduction)
         self.inertia = None
 
     def train(self, data: np.ndarray, add: bool = True,
