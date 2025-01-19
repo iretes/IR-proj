@@ -981,13 +981,8 @@ class FuzzyPQ(PQ):
             if num_dims:
                 pca = PCA(n_components=num_dims, whiten=whiten).fit(data_sub)
                 data_sub_red = pca.transform(data_sub)
-                initial_centers = kmeans_plusplus_initializer(data_sub_red,
-                    self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
-                    ).initialize()
-                initial_centers = FDataGrid(initial_centers)
-                fcm = FuzzyCMeans(n_clusters=self.K, init=initial_centers,
-                    fuzzifier=self.fuzzifier, n_init=1, random_state=self.seed,
-                    max_iter=self.kmeans_iter)
+                fcm = FuzzyCMeans(n_clusters=self.K, fuzzifier=self.fuzzifier,
+                    n_init=1, random_state=self.seed, max_iter=self.kmeans_iter)
                 fcm = fcm.fit(FDataGrid(data_sub_red))
                 cluster_centers = fcm.cluster_centers_.data_matrix.reshape(-1, pca.n_components_)
                 if self.dim_reduction:
@@ -997,13 +992,8 @@ class FuzzyPQ(PQ):
                     cluster_centers = pca.inverse_transform(cluster_centers)
                     self.codebook.append(cluster_centers)
             else:
-                initial_centers = kmeans_plusplus_initializer(data_sub,
-                    self.K, kmeans_plusplus_initializer.FARTHEST_CENTER_CANDIDATE
-                    ).initialize()
-                initial_centers = FDataGrid(initial_centers)
-                fcm = FuzzyCMeans(n_clusters=self.K, init=initial_centers,
-                    fuzzifier=self.fuzzifier, n_init=1, random_state=self.seed,
-                    max_iter=self.kmeans_iter)
+                fcm = FuzzyCMeans(n_clusters=self.K, fuzzifier=self.fuzzifier,
+                    n_init=1, random_state=self.seed, max_iter=self.kmeans_iter)
                 fcm = fcm.fit(FDataGrid(data_sub))
                 cluster_centers = fcm.cluster_centers_.data_matrix.reshape(-1, data_sub.shape[1])
                 self.codebook.append(cluster_centers)
@@ -1228,6 +1218,13 @@ class FuzzyPQ(PQ):
             dist_table[m, :] = cdist([query_sub], self.codebook[m], 'sqeuclidean')[0]
         
         dist = np.zeros(n, dtype=np.float32)
+        # membership = np.zeros((self.pqcode.shape[0], self.M, 2), dtype=np.float16)
+        # membership[:, :, 0] = 1 / (1 + self.membership_ratio)
+        # membership[:, :, 1] = self.membership_ratio / (1 + self.membership_ratio)
+        # dist = np.sum(
+        #     (dist_table[range(self.M), self.pqcode[subset, :, 0]] * membership[subset, :, 0] +
+        #     dist_table[range(self.M), self.pqcode[subset, :, 1]] * membership[subset, :, 1]), axis=1)
+        
         membership = np.zeros((n, self.M, 2), dtype=np.float16)
         membership_ratio_subset = self.membership_ratio[subset]
         membership[:, :, 0] = 1 / (1 + membership_ratio_subset)
