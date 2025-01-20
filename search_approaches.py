@@ -437,6 +437,9 @@ class PQ:
                         dist = cdist(data_sub[self.pqcode[:, m] == k],
                             [self.codebook[m][k]], 'sqeuclidean')
                         self.avg_dist[m, k] = np.mean(dist)
+        
+        if compute_distortions:
+            self.avg_dist = np.nan_to_num(self.avg_dist, nan=0.0)
 
     def add(self, data: np.ndarray, compute_distortions: bool = False,
         compute_energy: bool = False) -> None:
@@ -486,6 +489,7 @@ class PQ:
                     dist = cdist(data_sub[self.pqcode[:, m] == k],
                         [self.codebook[m][k]], 'sqeuclidean')
                     self.avg_dist[m, k] = np.mean(dist)
+            self.avg_dist = np.nan_to_num(self.avg_dist, nan=0.0)
 
     def compress(self, data: np.ndarray) -> np.ndarray:
         """
