@@ -75,6 +75,10 @@ class PQ:
     of samples to their closest cluster center, weighted by the sample weights
     if provided).
     """
+    n_iter: np.ndarray
+    """
+    Number of iterations performed by KMeans clustering in each subspace.
+    """
     features_labels: np.ndarray
     """
     Cluster labels of the features for partitioning.
@@ -157,6 +161,7 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = None
+        self.n_iter = None
         self.features_labels = None
         self.features_cluster_sizes = None
         self._chunk_start = None
@@ -368,6 +373,7 @@ class PQ:
         self.pqcode = None
         self.avg_dist = None
         self.inertia = np.empty((self.M))
+        self.n_iter = np.empty((self.M))
 
         if self.shrink_threshold:
             self._ncs = []
@@ -378,7 +384,7 @@ class PQ:
                 self.avg_dist = np.zeros((self.M, self.K), np.float32)
         
         if self.orth_transf:
-            self._O = ortho_group.rvs(dim=self.D)
+            self._O = ortho_group.rvs(dim=self.D, random_state=self.seed)
             data = np.dot(data, self._O)
         
         if self.dim_reduction:
@@ -417,6 +423,7 @@ class PQ:
                 km = km.fit(data_sub, sample_weight=sample_weight)
 
             self.inertia[m] = km.inertia_
+            self.n_iter[m] = km.n_iter_
             
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {km.n_iter_}"
@@ -850,6 +857,10 @@ class FuzzyPQ(PQ):
     distances of samples to their closest cluster center, weighted by the sample
     weights if provided).
     """
+    n_iter: np.ndarray
+    """
+    Number of iterations performed by KMeans clustering in each subspace.
+    """
     features_labels: np.ndarray
     """
     Cluster labels of the features for partitioning.
@@ -957,6 +968,7 @@ class FuzzyPQ(PQ):
         self.membership_ratio = None
         self._fcms = []
         self.inertia = np.empty((self.M))
+        self.n_iter = np.empty((self.M))
         
         if add:
             self.pqcode = np.empty((data.shape[0], self.M, 2), self.code_inttype)
@@ -1004,6 +1016,7 @@ class FuzzyPQ(PQ):
 
             self.inertia[m] = fcm.inertia_
             self._fcms.append(fcm)
+            self.n_iter[m] = fcm.n_iter_
 
             if verbose:
                 print(f"KMeans on subspace {m+1} converged in {fcm.n_iter_}"
