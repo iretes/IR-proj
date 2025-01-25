@@ -8,7 +8,6 @@ from scipy.stats import ortho_group
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 from skfda import FDataGrid
-from pyclustering.cluster.center_initializer import kmeans_plusplus_initializer
 from skfda.ml.clustering import FuzzyCMeans
 
 class PQ:
@@ -86,10 +85,6 @@ class PQ:
     features_cluster_sizes: np.ndarray
     """
     Number of features in each subspace.
-    """
-    energy_std: np.ndarray
-    """
-    Average energy (the sum of squared components) within each subspace.
     """
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
@@ -169,7 +164,6 @@ class PQ:
         self._pcas = None
         self._O = None
         self._ncs = None
-        self.energy_std = None
         
     def _compute_partitions(self, data: np.ndarray,
         features_labels: np.ndarray = None) -> None:
@@ -287,9 +281,9 @@ class PQ:
         return weights
 
     def train(self, data: np.ndarray, add: bool = True,
-        compute_distortions: bool = False, compute_energy: bool = False,
-        features_labels: np.ndarray = None, num_dims: int = None,
-        whiten: bool = False, weight_samples: bool = False, neighbor: int = 3,
+        compute_distortions: bool = False, features_labels: np.ndarray = None,
+        num_dims: int = None, whiten: bool = False,
+        weight_samples: bool = False, neighbor: int = 3,
         inverse_weights: bool = True, weight_method: str = "normal", 
         verbose: bool = False) -> None:
         """
@@ -307,10 +301,6 @@ class PQ:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             (if `add` is also True).
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -396,10 +386,6 @@ class PQ:
                 " must be less than the number of features in each subspace.")
         data = data[:, self._features_perm]
 
-        if add and compute_energy:
-            self.energy_std = self.compute_mean_energy(data,
-                compute_partitions=False)
-
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
             
@@ -448,8 +434,7 @@ class PQ:
         if compute_distortions:
             self.avg_dist = np.nan_to_num(self.avg_dist, nan=0.0)
 
-    def add(self, data: np.ndarray, compute_distortions: bool = False,
-        compute_energy: bool = False) -> None:
+    def add(self, data: np.ndarray, compute_distortions: bool = False) -> None:
         """
         Add data to the database.
 
@@ -461,10 +446,6 @@ class PQ:
         
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         Notes
         ----
@@ -483,10 +464,6 @@ class PQ:
 
         if self.features_labels is not None:
             data = data[:, self._features_perm]
-
-        if compute_energy:
-            self.energy_std = self.compute_mean_energy(data,
-                compute_partitions=False)
 
         if compute_distortions:
             self.avg_dist = np.zeros((self.M, self.K), np.float32)
@@ -748,54 +725,6 @@ class PQ:
         plt.xlabel("Principal components")
         plt.legend()
 
-    def compute_mean_energy(self, data: np.ndarray,
-        compute_partitions: bool = True, features_labels: np.ndarray = None
-        ) -> None:
-        """
-        Compute the average energy (the sum of squared components) within each
-        subspace.
-
-        Parameters
-        ----------
-
-        data : np.ndarray
-            Data to compute the energy.
-
-        compute_partitions : bool, default=True
-            Compute the partitioning of the features into subspaces.
-
-        features_labels : np.ndarray, default=None
-            Features labels for custom partitioning of the features into
-            subspaces.
-
-        Returns
-        -------
-
-        energy_std : np.ndarray
-            Average energy in each subspace.
-        
-        """
-
-        if compute_partitions:
-            self.D = data.shape[1]
-            if self.D % self.M != 0:
-                raise ValueError("Feature dimension must be divisible by the number"
-                    " of subspaces (M).")
-            if features_labels is not None and features_labels.shape[0] != self.D:
-                raise ValueError("Feature labels must have the same number of"
-                    " features as the data.")
-            self.Ds = int(self.D / self.M)
-
-            self._compute_partitions(data, features_labels)
-            data = data[:, self._features_perm]
-
-        energy_std = np.zeros((self.M))
-        for m in range(self.M):
-            data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
-            energy = np.sum(data_sub ** 2, axis=1)
-            energy_std[m] = np.mean(energy)
-        return energy_std
-
 class FuzzyPQ(PQ):
     """
     Fuzzy Product Quantization implementation.
@@ -869,10 +798,6 @@ class FuzzyPQ(PQ):
     """
     Number of features in each subspace.
     """
-    energy_std: np.ndarray
-    """
-    Average energy (the sum of squared components) within each subspace.
-    """
 
     def __init__(self, M: int = 8, K: int = 256, kmeans_iter: int = 300,
         fuzzifier: float = 2, seed: int = None, orth_transf: bool = False,
@@ -914,9 +839,8 @@ class FuzzyPQ(PQ):
         self.membership_ratio = None
 
     def train(self, data: np.ndarray, add: bool = True,
-        compute_energy: bool = False, features_labels: np.ndarray = None,
-        num_dims: int = None, whiten: bool = False,
-        verbose: bool = False) -> None:
+        features_labels: np.ndarray = None, num_dims: int = None,
+        whiten: bool = False, verbose: bool = False) -> None:
         """
         Train the quantizer on the given data.
         
@@ -928,10 +852,6 @@ class FuzzyPQ(PQ):
 
         add : bool, default=True
             Add the data to the database.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -987,10 +907,6 @@ class FuzzyPQ(PQ):
                 " must be less than the number of features in each subspace.")
         data = data[:, self._features_perm]
 
-        if add and compute_energy:
-            self.energy_std = self.compute_mean_energy(data,
-                compute_partitions=False)
-
         for m in range(self.M):
             data_sub = data[:, self._chunk_start[m] : self._chunk_start[m+1]]
 
@@ -1031,7 +947,7 @@ class FuzzyPQ(PQ):
                 membership2 = full_membership[range(data_sub.shape[0]), sorted_codes[:, -2]]
                 self.membership_ratio[:, m] = membership2 / membership1
     
-    def add(self, data: np.ndarray, compute_energy: bool = False) -> None:
+    def add(self, data: np.ndarray) -> None:
         """
         Add data to the database.
 
@@ -1040,10 +956,6 @@ class FuzzyPQ(PQ):
 
         data : np.ndarray
             Data to add to the database.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         Notes
         ----
@@ -1062,10 +974,6 @@ class FuzzyPQ(PQ):
 
         if self.features_labels is not None:
             data = data[:, self._features_perm]
-
-        if compute_energy:
-            self.energy_std = self.compute_mean_energy(data,
-                compute_partitions=False)
 
     def compress(self, data: np.ndarray) -> np.ndarray:
         """
@@ -1382,9 +1290,9 @@ class IVF:
         self.inertia = None
     
     def train(self, data: np.ndarray, add: bool = True,
-        compute_distortions: bool = False, compute_energy: bool = False,
-        features_labels: np.ndarray = None, num_dims: int = None,
-        whiten: bool = False, weight_samples: bool = False, neighbor: int = 3,
+        compute_distortions: bool = False, features_labels: np.ndarray = None,
+        num_dims: int = None, whiten: bool = False,
+        weight_samples: bool = False, neighbor: int = 3,
         inverse_weights: bool = True, weight_method: str = "normal",
         verbose: bool = False) -> None:
         """
@@ -1402,10 +1310,6 @@ class IVF:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             (if `add` is also True) for the PQ quantizer.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -1483,13 +1387,12 @@ class IVF:
         residuals = data - self.centroids[labels]
         self.pq.train(data=residuals, add=add,
             compute_distortions=compute_distortions,
-            compute_energy=compute_energy, features_labels=features_labels,
-            num_dims=num_dims, whiten=whiten, weight_samples=weight_samples,
-            neighbor=neighbor, inverse_weights=inverse_weights,
-            weight_method=weight_method, verbose=verbose)
+            features_labels=features_labels, num_dims=num_dims, whiten=whiten,
+            weight_samples=weight_samples, neighbor=neighbor,
+            inverse_weights=inverse_weights, weight_method=weight_method,
+            verbose=verbose)
 
-    def add(self, data: np.ndarray, compute_distortions:bool = False,
-        compute_energy: bool = False) -> None:
+    def add(self, data: np.ndarray, compute_distortions:bool = False) -> None:
         """
         Add data to the IVF structure.
 
@@ -1502,10 +1405,6 @@ class IVF:
         compute_distortions : bool, default=False
             Compute the average distortion for each cluster in each subspace
             for the PQ quantizer.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
         
         """
         
@@ -1520,8 +1419,7 @@ class IVF:
         self.num_els = data.shape[0]
         
         residuals = data - self.centroids[labels]
-        self.pq.add(data=residuals, compute_distortions=compute_distortions,
-            compute_energy=compute_energy)
+        self.pq.add(data=residuals, compute_distortions=compute_distortions)
 
     def search(self, query: np.ndarray, w: int = 8, asym: bool = True,
         correct: bool = False, sort: bool = True) \
@@ -1726,8 +1624,8 @@ class FuzzyIVF:
         self.inertia = None
     
     def train(self, data: np.ndarray, add: bool = True,
-        compute_energy: bool = False, features_labels: np.ndarray = None,
-        num_dims: int = None, whiten: bool = False, verbose: bool = False) -> None:
+        features_labels: np.ndarray = None, num_dims: int = None,
+        whiten: bool = False, verbose: bool = False) -> None:
         """
         Train the IVF on the given data.
 
@@ -1739,10 +1637,6 @@ class FuzzyIVF:
 
         add : bool, default=True
             Add the data to the index.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
 
         features_labels : np.ndarray, default=None
             Features labels for custom partitioning of the features into
@@ -1799,11 +1693,10 @@ class FuzzyIVF:
             self.num_els = data.shape[0]
         
         residuals = data - self.centroids[labels]
-        self.pq.train(data=residuals, add=add, compute_energy=compute_energy,
-            features_labels=features_labels, num_dims=num_dims, whiten=whiten,
-            verbose=verbose)
+        self.pq.train(data=residuals, add=add, features_labels=features_labels,
+            num_dims=num_dims, whiten=whiten, verbose=verbose)
 
-    def add(self, data: np.ndarray, compute_energy: bool = False) -> None:
+    def add(self, data: np.ndarray) -> None:
         """
         Add data to the IVF structure.
 
@@ -1812,10 +1705,6 @@ class FuzzyIVF:
 
         data : np.ndarray
             Data to add to the index.
-
-        compute_energy : bool, default=False
-            Compute the average energy (the sum of squared components) within
-            each subspace.
         
         """
         
@@ -1830,7 +1719,7 @@ class FuzzyIVF:
         self.num_els = data.shape[0]
         
         residuals = data - self.centroids[labels]
-        self.pq.add(data=residuals, compute_energy=compute_energy)
+        self.pq.add(data=residuals)
 
     def search(self, query: np.ndarray, w: int = 8, sort: bool = True) \
         -> tuple[np.ndarray, np.ndarray]:

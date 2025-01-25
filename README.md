@@ -22,8 +22,6 @@ tar -xvzf sift.tar.gz
 # Download the glove dataset
 wget https://huggingface.co/stanfordnlp/glove/resolve/main/glove.6B.zip -O glove.6B.zip
 unzip glove.6B.zip -d glove
-# Subsample the glove dataset and convert it to numpy arrays
-python create_glove_dataset.py
 ```
 
 ## Directory structure
@@ -31,15 +29,15 @@ python create_glove_dataset.py
 The project's directory structure includes the following main files and folders:
 
 ```
-IR-proj # TODO: re-check
-  │── docs                          # stores the html documentation
+IR-proj
   |── gist                          # stores the gist dataset
   |── glove                         # stores the glove dataset
-  |── img                           # stores images of the experiments
+  |── img                           # stores images used in notebooks
+  |── results                       # stores run notebooks
   |── sift                          # stores the sift dataset
   |── siftsmall                     # stores the siftsmall dataset
   |── faiss_comparison.ipynb        # compares the performance of the faiss library with the implemented method
-  |── fuzzyPQ_experiments.ipynb     # experiments with the fuzzy product quantization
+  |── fuzzyPQ_experiments.ipynb     # experiments with fuzzy product quantization
   |── large_scale_experiments.ipynb # large scale experiments
   |── results_comparison.md         # comparison of the results obtained in the original article
   |── search_approaches.py          # implementation of the search approaches

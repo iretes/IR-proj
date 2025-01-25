@@ -3,9 +3,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import plotly.graph_objects as go
-import plotly.offline as pyo
-
-# TODO: add docs
 
 def ivecs_read(fname):
     a = np.fromfile(fname, dtype='int32')
@@ -26,6 +23,40 @@ def load_descriptors(name, dir):
 def load_data(dataset_name, dataset_dir, search_train_subset=False, random_seed=None):
     """
     Load the data for the specified dataset.
+
+    Parameters
+    ----------
+
+    dataset_name : str
+        Name of the dataset to load. Choose from 'siftsmall', 'sift', 'gist' or
+        'glove'.
+
+    dataset_dir : str
+        Directory where the dataset files are stored.
+
+    search_train_subset : bool, optional
+        If True, the search data will be a subset of the training data. Default
+        is False.
+
+    random_seed : int, optional
+        Random seed to use for reproducibility. Default is None.
+
+    Returns
+    -------
+
+    tr_data : numpy.ndarray
+        Training data.
+
+    search_data : numpy.ndarray
+        Search data.
+
+    queries : numpy.ndarray
+        Query data.
+
+    gt : numpy.ndarray
+        Ground truth data. Only returned for 'siftsmall', 'sift' and 'gist'
+        datasets.
+    
     """
     gt = None
     rng = np.random.default_rng(random_seed)
@@ -42,7 +73,7 @@ def load_data(dataset_name, dataset_dir, search_train_subset=False, random_seed=
     elif dataset_name == "glove":
         data = pd.read_table(f"{dataset_dir}/glove.6B.300d.txt", sep=" ",
             index_col=0, header=None, quoting=csv.QUOTE_NONE)
-        # exclusding missing values, non-alphanumeric characters and punctuation
+        # excluding missing values, non-alphanumeric characters and punctuation
         data = data[data.index.notna()]
         data = data[~data.index.str.contains(r'[^\w\s]', regex=True)]
         # subsample data
@@ -70,33 +101,51 @@ def load_data(dataset_name, dataset_dir, search_train_subset=False, random_seed=
 
     return tr_data, search_data, queries, gt
 
-def NDCG(ranking, exact_ranking): # TODO: remove?
-    """Compute the Normalized Discounted Cumulative Gain."""
-    dcg = 0
-    idcg = 0
-    for i, idx in enumerate(ranking):
-        if idx in exact_ranking:
-            dcg += 1 / np.log2(i+2)
-        if i < len(exact_ranking):
-            idcg += 1 / np.log2(i+2)
-    return dcg / idcg
-
 def recall_at_r(ranking, exact_ranking, r):
-    """Compute the Recall@R."""
+    """
+    Compute the Recall@R.
+
+    Parameters
+    ----------
+
+    ranking : list or numpy.ndarray
+        Ranking of the elements.
+
+    exact_ranking : list or numpy.ndarray
+        Exact ranking of the elements.
+
+    r : int
+        Number of elements to consider.
+
+    Returns
+    -------
+
+    recall : float
+        Recall@R.
+    
+    """
     return len(set(ranking[:r]) & set(exact_ranking[:r])) / r
 
-def AP_at_r(ranking, exact_ranking, r): # TODO: remove?
-    """Compute the Average Precision@R."""
-    ap = 0
-    num_rel = 0
-    for i, idx in enumerate(ranking[:r]):
-        if idx in exact_ranking[:r]:
-            num_rel += 1
-            ap += num_rel / (i+1)
-    return ap / num_rel
-
 def NMSE(original_data, decompressed_data):
-    """Compute the Normalized Mean Squared Error."""
+    """
+    Compute the Normalized Mean Squared Error.
+
+    Parameters
+    ----------
+
+    original_data : numpy.ndarray
+        Original data.
+
+    decompressed_data : numpy.ndarray
+        Decompressed data.
+
+    Returns
+    -------
+
+    nmse : float
+        Normalized Mean Squared Error.
+    
+    """
     squared_error = np.sum((original_data - decompressed_data)**2, axis=1)
     squared_norm = np.sum(np.square(original_data), axis=1)
     return np.mean(squared_error / squared_norm)
@@ -107,7 +156,25 @@ def sankey_plot(
         title=None,
         color_palette=sns.color_palette()
     ):
-    """Plots a Sankey diagram of the sets of labels passed as arguments."""
+    """
+    Plots a Sankey diagram of the sets of labels passed as arguments.
+
+    Parameters
+    ----------
+
+    labels : list of numpy.ndarray
+        List of labels for each set of data.
+
+    labels_titles : list of str, optional
+        List of titles for each set of labels. Default is None.
+
+    title : str, optional
+        Title of the plot. Default is None.
+
+    color_palette : seaborn color palette, optional
+        Color palette to use for the plot. Default is seaborn color palette.
+    
+    """
 
     n_clusters = [len(set(label_list)) for label_list in labels]
 

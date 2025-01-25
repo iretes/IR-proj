@@ -1,5 +1,6 @@
 __pycache__
 **/.DS_Store
-sift/
-siftsmall/
-glove/
+sift/**
+siftsmall/**
+glove/**
+gist/**
