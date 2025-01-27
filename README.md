@@ -41,6 +41,7 @@ IR-proj
   |── large_scale_experiments.ipynb # large scale experiments
   |── results_comparison.md         # comparison of the results obtained in the original article
   |── search_approaches.py          # implementation of the search approaches
+  |── slides.pdf                    # slides presenting the main findings
   |── small_scale_experiments.ipynb # small scale experiments
   └── utils.py                      # implementation of utility functions
 ```
